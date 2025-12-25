@@ -1,0 +1,116 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.3.10/schema.json",
+  "files": {
+    "includes": [
+      "**",
+
+      "!!/**/.turbo",
+      "!!/**/.next",
+      "!!/**/.vscode",
+      "!!/**/coverage",
+
+      "!apps/**/tailwind.config.ts",
+      "!apps/**/vitest.config.ts",
+      "!apps/**/*prompt_config*.json",
+
+      "!packages/database/drizzle",
+      "!packages/email/.react-email",
+      "!packages/tsconfig",
+
+      "!/**/*.d.ts"
+    ],
+    "ignoreUnknown": false
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space"
+  },
+  "javascript": {
+    "formatter": {
+      "arrowParentheses": "asNeeded",
+      "attributePosition": "auto",
+      "bracketSameLine": false,
+      "bracketSpacing": true,
+      "jsxQuoteStyle": "double",
+      "lineEnding": "lf",
+      "lineWidth": 80,
+      "quoteProperties": "asNeeded",
+      "quoteStyle": "single",
+      "semicolons": "always",
+      "trailingCommas": "es5"
+    },
+    "jsxRuntime": "reactClassic"
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "off"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "a11y": {
+        "noSvgWithoutTitle": "warn",
+        "useAltText": "warn",
+        "useButtonType": "warn",
+        "useKeyWithClickEvents": "warn"
+      },
+      "complexity": {
+        "noForEach": "warn",
+        "noUselessFragments": "warn",
+        "useArrowFunction": "warn",
+        "useRegexLiterals": "warn"
+      },
+      "correctness": {
+        "useExhaustiveDependencies": "warn",
+        "noSwitchDeclarations": "warn",
+        "noUnsafeOptionalChaining": "warn"
+      },
+      "performance": {
+        "noAccumulatingSpread": "warn",
+        "noDelete": "warn"
+      },
+      "suspicious": {
+        "noArrayIndexKey": "warn",
+        "noAssignInExpressions": "warn",
+        "noDoubleEquals": "warn",
+        "noGlobalIsNan": "warn",
+        "noImplicitAnyLet": "warn",
+        "noRedeclare": "warn",
+        "noShadowRestrictedNames": "warn"
+      },
+      "style": {
+        "useNodejsImportProtocol": "warn",
+        "noNonNullAssertion": "warn",
+        "noParameterAssign": "warn",
+        "noUnusedTemplateLiteral": "warn",
+        "noUselessElse": "warn",
+        "useNumberNamespace": "warn",
+        "useSelfClosingElements": "warn",
+        "useSingleVarDeclarator": "warn",
+        "useImportType": "warn",
+        "useTemplate": "warn"
+      },
+      "recommended": true
+    }
+  },
+  "vcs": {
+    "clientKind": "git",
+    "enabled": false,
+    "useIgnoreFile": false
+  },
+  "overrides": [
+    {
+      "includes": ["apps/**/src/**/*.test.ts", "apps/**/src/**/*.spec.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"compilerOptions": {
+		"module": "CommonJS",
+		"outDir": "./dist",
+		"allowJs": true,
+		"checkJs": true,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"incremental": true,
+		"inlineSources": false,
+		"isolatedModules": true,
+		"moduleDetection": "force",
+		"noEmit": true,
+		"noUncheckedIndexedAccess": true,
+		"noUnusedLocals": false,
+		"noUnusedParameters": false,
+		"preserveWatchOutput": true,
+		"resolveJsonModule": true,
+		"skipLibCheck": true,
+		"strict": true,
+		"target": "ES2022"
+	},
+	"moduleResolution": "node",
+	"types": ["node"],
+	"exclude": ["dist", "node_modules"],
+	"include": ["**/*.ts", "**/*.tsx"],
+	"display": "Default",
+	"plugins": [
+		{
+			"moveDownPatterns": ["dist"],
+			"moveUpPatterns": ["~/", "\\.{1,2}/"],
+			"name": "ts-plugin-sort-import-suggestions"
+		}
+	]
+}
