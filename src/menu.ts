@@ -1,7 +1,7 @@
 import readline from 'node:readline';
 
-export type MenuHandler = () => void | Promise<void>;
-export type MenuSpec = Record<string, MenuHandler>;
+export type MenuHandler<R = void> = () => R | Promise<R>;
+export type MenuSpec<R = void> = Record<string, MenuHandler<R>>;
 
 export type RunKeypressMenuOptions = {
   title?: string; // default: "Choose an option:"
@@ -14,106 +14,148 @@ export type RunKeypressMenuOptions = {
 
 class MenuInterruptedError extends Error {
   public readonly code = 'SIGINT' as const;
-
   public constructor() {
     super('Interrupted');
   }
 }
 
-type Choice = {
+// biome-ignore lint/suspicious/noConfusingVoidType: :^|
+type NormalizeVoid<T> = [T] extends [void] ? undefined : T;
+
+type Choice<K extends string, R> = {
   digit: string; // "1".."9"
-  label: string;
-  run: MenuHandler;
+  key: K;
+  run: MenuHandler<R>;
 };
 
-export async function runKeypressMenu<T extends MenuSpec>(
+const toError = (err: unknown): Error => {
+  if (err instanceof Error) return err;
+  if (typeof err === 'string') return new Error(err);
+  try {
+    return new Error(JSON.stringify(err));
+  } catch {
+    return new Error(String(err));
+  }
+};
+
+export async function runKeypressMenu<R, T extends MenuSpec<R>>(
   spec: T,
   opts: RunKeypressMenuOptions = {}
-): Promise<keyof T & string> {
-  const stdout = opts.stdout ?? process.stdout;
-  const stdin = opts.stdin ?? process.stdin;
+): Promise<[keyof T & string, NormalizeVoid<Awaited<R>>] | Error> {
+  try {
+    const stdout = opts.stdout ?? process.stdout;
+    const stdin = opts.stdin ?? process.stdin;
 
-  const entries = Object.entries(spec);
-  if (entries.length === 0) throw new Error('Menu spec is empty.');
+    const keys = Object.keys(spec) as Array<keyof T & string>;
+    if (keys.length === 0) return new Error('Menu spec is empty.');
 
-  // single-keystroke digits => max 9 options
-  if (entries.length > 9) {
-    throw new Error(
-      `Too many options (${entries.length}). This menu supports up to 9 for single-key selection.`
-    );
-  }
+    // single-keystroke digits => max 9 options
+    if (keys.length > 9) {
+      return new Error(
+        `Too many options (${keys.length}). This menu supports up to 9 for single-key selection.`
+      );
+    }
 
-  const choices: Choice[] = entries.map(([label, run], i) => ({
-    digit: String(i + 1),
-    label,
-    run,
-  }));
+    if (!stdin.isTTY) {
+      return new Error(
+        'stdin is not a TTY (raw key capture requires an interactive terminal)'
+      );
+    }
+    if (typeof stdin.setRawMode !== 'function') {
+      return new Error(
+        'stdin.setRawMode is not available (expected a TTY stream)'
+      );
+    }
 
-  const digitToChoice = new Map<string, Choice>(choices.map(c => [c.digit, c]));
+    const choices: Array<Choice<keyof T & string, R>> = [];
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (!key) return new Error('Unexpected empty key.');
 
-  if (!stdin.isTTY) {
-    throw new Error(
-      'stdin is not a TTY (raw key capture requires an interactive terminal)'
-    );
-  }
-  if (typeof (stdin as NodeJS.ReadStream).setRawMode !== 'function') {
-    throw new Error(
-      'stdin.setRawMode is not available (expected a TTY stream)'
-    );
-  }
-
-  const title = opts.title ?? 'Choose an option:';
-  stdout.write(`${title}\n`);
-  for (const c of choices) stdout.write(`  ${c.digit}) ${c.label}\n`);
-
-  const promptPrefix = opts.promptPrefix ?? 'Press ';
-  const promptSuffix = opts.promptSuffix ?? ': ';
-  const digitsStr = choices.map(c => c.digit).join('/');
-  stdout.write(`\n${promptPrefix}${digitsStr}${promptSuffix}`);
-
-  readline.emitKeypressEvents(stdin);
-  stdin.setRawMode(true);
-  stdin.resume();
-
-  const cleanup = (onKeypress: (str: string, key: readline.Key) => void) => {
-    stdin.setRawMode(false);
-    stdin.pause();
-    stdin.removeListener('keypress', onKeypress);
-  };
-
-  return await new Promise((resolve, reject) => {
-    const onKeypress = (str: string, key: readline.Key) => {
-      // Ctrl+C
-      if (key.sequence === '\u0003') {
-        cleanup(onKeypress);
-        stdout.write('\n');
-        reject(new MenuInterruptedError());
-        return;
+      const run = spec[key];
+      if (typeof run !== 'function') {
+        return new Error(
+          `Menu handler for "${key}" is missing or not a function.`
+        );
       }
 
-      const choice = digitToChoice.get(str);
-      if (!choice) return;
+      choices.push({
+        digit: String(i + 1),
+        key,
+        run,
+      });
+    }
 
-      // echo the keystroke on the same line as the prompt
-      stdout.write(`${choice.digit}\n`);
+    const digitToChoice = new Map<string, Choice<keyof T & string, R>>(
+      choices.map(c => [c.digit, c])
+    );
 
-      (async () => {
-        try {
-          if (opts.printSelectedLine ?? true) {
-            stdout.write(`Selected: ${choice.label}\n`);
-          }
+    const title = opts.title ?? 'Choose an option:';
+    stdout.write(`${title}\n`);
+    for (const c of choices) stdout.write(`  ${c.digit}) ${c.key}\n`);
 
-          await choice.run();
+    const promptPrefix = opts.promptPrefix ?? 'Press ';
+    const promptSuffix = opts.promptSuffix ?? ': ';
+    const digitsStr = choices.map(c => c.digit).join('/');
+    stdout.write(`\n${promptPrefix}${digitsStr}${promptSuffix}`);
 
-          cleanup(onKeypress);
-          resolve(choice.label as keyof T & string);
-        } catch (err) {
-          cleanup(onKeypress);
-          reject(err);
-        }
-      })().catch(reject);
+    readline.emitKeypressEvents(stdin);
+    stdin.setRawMode(true);
+    stdin.resume();
+
+    const cleanup = (onKeypress: (str: string, key: readline.Key) => void) => {
+      try {
+        stdin.setRawMode(false);
+      } catch {
+        // ignore
+      }
+      stdin.pause();
+      stdin.removeListener('keypress', onKeypress);
     };
 
-    stdin.on('keypress', onKeypress);
-  });
+    return await new Promise<
+      [keyof T & string, NormalizeVoid<Awaited<R>>] | Error
+    >(resolve => {
+      const finish = (
+        value: [keyof T & string, NormalizeVoid<Awaited<R>>] | Error,
+        onKeypress: (str: string, key: readline.Key) => void
+      ) => {
+        cleanup(onKeypress);
+        resolve(value);
+      };
+
+      const onKeypress = (str: string, key: readline.Key) => {
+        // Ctrl+C
+        if (key.sequence === '\u0003') {
+          stdout.write('\n');
+          finish(new MenuInterruptedError(), onKeypress);
+          return;
+        }
+
+        const choice = digitToChoice.get(str);
+        if (!choice) return;
+
+        // echo the keystroke on the same line as the prompt
+        stdout.write(`${choice.digit}\n`);
+
+        (async () => {
+          try {
+            if (opts.printSelectedLine ?? true) {
+              stdout.write(`Selected: ${choice.key}\n`);
+            }
+
+            const raw = await choice.run();
+            const value = raw as NormalizeVoid<Awaited<R>>; // runtime is already undefined for void
+            finish([choice.key, value], onKeypress);
+          } catch (err) {
+            finish(toError(err), onKeypress);
+          }
+        })().catch(err => finish(toError(err), onKeypress));
+      };
+
+      stdin.on('keypress', onKeypress);
+    });
+  } catch (err) {
+    return toError(err);
+  }
 }
