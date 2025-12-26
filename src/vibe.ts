@@ -265,6 +265,14 @@ export type VibeScriptPreambleBlock = {
   transforms?: VibeScriptTransform[] | null;
 };
 
+export type VibeScriptStep = {
+  step: string;
+  expects?: VibeScriptType | null;
+  transforms?: VibeScriptTransform[] | null;
+  outputName?: string | null;
+  inputName?: string | null;
+};
+
 export type VibeScriptVarDecl = {
   name: string;
   type?: VibeScriptType;
@@ -272,7 +280,7 @@ export type VibeScriptVarDecl = {
 
 export enum VibeScriptExpressionKind {
   WithAssignments = 'WithAssignments',
-  WitoutAssignments = 'WithoutAssignments',
+  WithoutAssignments = 'WithoutAssignments',
 }
 
 // expressions
@@ -298,14 +306,55 @@ export type VibeScriptCallExpression = {
   call: VibeScriptCall;
 };
 
+export enum VibeScriptUnaryOp {
+  PreIncrement = 'PreIncrement',
+  PostIncrement = 'PostIncrement',
+  PreDecrement = 'PreDecrement',
+  PostDecrement = 'PostDecrement',
+}
+
+export type VibeScriptUnaryOpExpression = {
+  expr: VibeScriptExpression;
+  operator: VibeScriptUnaryOp;
+};
+
+export enum VibeScriptBinaryOperator {
+  Add = 'Add',
+  Subtract = 'Subtract',
+  Multiply = 'Multiply',
+  Divide = 'Divide',
+  Modulo = 'Modulo',
+  Equal = 'Equal',
+  NotEqual = 'NotEqual',
+  LessThan = 'LessThan',
+  GreaterThan = 'GreaterThan',
+  LessThanOrEqual = 'LessThanOrEqual',
+  GreaterThanOrEqual = 'GreaterThanOrEqual',
+  LogicalAnd = 'LogicalAnd',
+  LogicalOr = 'LogicalOr',
+  Assign = 'Assign',
+}
+
+export type VibeScriptBinaryOpExpression = {
+  lhs: VibeScriptExpression;
+  operator: VibeScriptBinaryOperator;
+  rhs: VibeScriptExpression;
+};
+
+export type VibeScriptOperator = VibeScriptUnaryOp | VibeScriptBinaryOperator;
+
+export type VibeScriptOperatorExpression = {
+  operator: VibeScriptOperator;
+};
+
 export type VibeScriptExpression =
   | VibeScriptBooleanExpression
   | VibeScriptNumberExpression
   | VibeScriptVarExpression
-  | VibeScriptCallExpression;
-// | VibeScriptUnaryOpExpression
-// | VibeScriptBinaryOpExpression
-// | VibeScriptOperatorExpression
+  | VibeScriptCallExpression
+  | VibeScriptUnaryOpExpression
+  | VibeScriptBinaryOpExpression
+  | VibeScriptOperatorExpression;
 
 // statements
 
@@ -342,7 +391,13 @@ export type VibeScriptTextLiteralQuasis = {
   quasis: string;
 };
 
-export type VibeScriptTextLiteralPart = VibeScriptTextLiteralQuasis;
+export type VibeScriptTextLiteralExpression = {
+  expr: VibeScriptExpression;
+};
+
+export type VibeScriptTextLiteralPart =
+  | VibeScriptTextLiteralQuasis
+  | VibeScriptTextLiteralExpression;
 
 export type VibeScriptTextBlock = {
   parts: VibeScriptTextLiteralPart[];
@@ -1076,19 +1131,841 @@ const parsePreamble = (
   };
 };
 
+// parse step
+
+const parseStep = (parser: Parser<VibeScriptToken>): VibeScriptStep | Error => {
+  if (parserIsEof(parser)) {
+    return new Error('unexpected end of file parsing step statement');
+  }
+
+  ///
+
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  ///
+
+  const colonToken = parser.tokens[parser.position];
+
+  if (colonToken === undefined) {
+    return new Error(
+      'unexpected undefined token parsing step statement (expected ":")'
+    );
+  }
+
+  if (colonToken.kind !== 'punc' || colonToken.value !== ':') {
+    return new Error(
+      `expected step name colon ':', got '${colonToken.kind} ${colonToken.value}'`
+    );
+  }
+
+  parser.position += 1;
+
+  ///
+
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  ///
+
+  const nameToken = parser.tokens[parser.position];
+
+  if (nameToken === undefined) {
+    return new Error(
+      'unexpected undefined token parsing step statement (expected step name)'
+    );
+  }
+
+  if (nameToken.kind !== 'text' || nameToken.value == null) {
+    return new Error(
+      `expected step name token (text), got '${nameToken.kind} ${nameToken.value}'`
+    );
+  }
+
+  parser.position += 1;
+
+  ///
+
+  let expects: VibeScriptType | null = null;
+
+  let transforms: VibeScriptTransform[] | null = null;
+
+  let outputName: string | null = null;
+
+  let inputName: string | null = null;
+
+  // Consume optional clauses up to '-->' without consuming '-->' itself.
+  // Supported:
+  //
+  //   ; expects: <type> ; takeLast | takeLast(N) | maxBy(key)
+  //   ; named <identifier>
+  //   ; from <identifier>
+  //
+  // Everything else is tolerated/ignored for future extensibility.
+  while (!parserIsEof(parser)) {
+    const ptr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+    const t = parser.tokens[ptr];
+
+    if (!t) {
+      break;
+    }
+
+    if (t.kind === 'punc' && t.value === '-->') {
+      parser.position = ptr;
+
+      break;
+    }
+
+    if (t.kind === 'punc' && t.value === ';') {
+      parser.position = ptr + 1;
+
+      ///
+
+      parser.position = skipWhitespaceOrNewlines(
+        parser.tokens,
+        parser.position
+      );
+
+      const kw = parser.tokens[parser.position];
+
+      if (kw?.kind !== 'text' || kw.value == null) {
+        return new Error(
+          `expected clause keyword after ';' in step statement, got '${kw?.kind} ${kw?.value}'`
+        );
+      }
+
+      if (kw.value === 'expects') {
+        parser.position += 1;
+
+        ///
+
+        const preamble = parsePreamble(parser, {
+          stopOnUnknownClause: true,
+        });
+
+        if (preamble instanceof Error) {
+          return preamble;
+        }
+
+        expects = preamble.expects ?? null;
+
+        transforms = preamble.transforms ?? null;
+
+        continue;
+      }
+
+      if (kw.value === 'named') {
+        if (outputName !== null) {
+          return new Error('step output name already set');
+        }
+
+        parser.position += 1;
+
+        ///
+
+        parser.position = skipWhitespaceOrNewlines(
+          parser.tokens,
+          parser.position
+        );
+
+        const nameTok = parser.tokens[parser.position];
+
+        if (nameTok?.kind !== 'text' || nameTok.value == null) {
+          return new Error(
+            `expected output name after 'named', got '${nameTok?.kind} ${nameTok?.value}'`
+          );
+        }
+
+        if (nameTok.value.length === 0) {
+          return new Error('step output name cannot be empty');
+        }
+
+        outputName = nameTok.value;
+
+        parser.position += 1;
+
+        continue;
+      }
+
+      if (kw.value === 'from') {
+        if (inputName !== null) {
+          return new Error('step input name already set');
+        }
+
+        parser.position += 1;
+
+        ///
+
+        parser.position = skipWhitespaceOrNewlines(
+          parser.tokens,
+          parser.position
+        );
+
+        const nameTok = parser.tokens[parser.position];
+
+        if (nameTok?.kind !== 'text' || nameTok.value == null) {
+          return new Error(
+            `expected input name after 'from', got '${nameTok?.kind} ${nameTok?.value}'`
+          );
+        }
+
+        if (nameTok.value.length === 0) {
+          return new Error('step input name cannot be empty');
+        }
+
+        inputName = nameTok.value;
+
+        parser.position += 1;
+
+        continue;
+      }
+
+      // tolerate unknown clause
+      parser.position += 1;
+
+      continue;
+    }
+
+    parser.position = ptr + 1;
+  }
+
+  if (parserIsEof(parser)) {
+    return new Error(
+      'unexpected end of file parsing step statement (missing "-->")'
+    );
+  }
+
+  ///
+
+  return {
+    step: nameToken.value,
+    expects,
+    transforms,
+    outputName,
+    inputName,
+  };
+};
+
 // parse expression
+
+const parseOperand = (
+  parser: Parser<VibeScriptToken>
+): VibeScriptExpression | Error => {
+  if (parserIsEof(parser)) {
+    return new Error('unexpected end of file parsing vibe script operand');
+  }
+
+  ///
+
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  ///
+
+  let expr: VibeScriptExpression | null = null;
+
+  ///
+
+  const nextToken = parser.tokens[parser.position];
+
+  if (nextToken === undefined) {
+    return new Error('unexpected undefined token parsing vibe script operand');
+  }
+
+  const nextNextPtr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  const nextNextToken = parser.tokens[nextNextPtr];
+
+  ///
+
+  // boolean true
+
+  if (
+    expr === null &&
+    nextToken.kind === 'text' &&
+    nextToken.value === 'true'
+  ) {
+    parser.position += 1;
+
+    expr = {
+      value: true,
+    };
+  }
+
+  // boolean false
+
+  if (
+    expr === null &&
+    nextToken.kind === 'text' &&
+    nextToken.value === 'false'
+  ) {
+    parser.position += 1;
+
+    expr = {
+      value: false,
+    };
+  }
+
+  // logcal and (as operator-expression, mostly for error tolerance)
+
+  if (expr === null && nextToken.kind === 'punc' && nextToken.value === '&&') {
+    parser.position += 1;
+
+    expr = {
+      operator: VibeScriptBinaryOperator.LogicalAnd,
+    };
+  }
+
+  // logical or (as operator-expression, mostly for error tolerance)
+
+  if (expr === null && nextToken.kind === 'punc' && nextToken.value === '||') {
+    parser.position += 1;
+
+    expr = {
+      operator: VibeScriptBinaryOperator.LogicalOr,
+    };
+  }
+
+  // logical not
+
+  if (expr === null && nextToken.kind === 'punc' && nextToken.value === '!') {
+    return new Error('logical not parsing not implemented yet');
+  }
+
+  // call
+
+  if (
+    expr === null &&
+    nextToken.kind === 'text' &&
+    nextNextToken?.kind === 'punc' &&
+    nextNextToken.value === '('
+  ) {
+    const call = parseCall(parser);
+
+    if (call instanceof Error) {
+      return call;
+    }
+
+    expr = {
+      call,
+    };
+  }
+
+  // parenthesized expression
+
+  if (expr === null && nextToken.kind === 'punc' && nextToken.value === '(') {
+    parser.position += 1;
+
+    ///
+
+    parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+    ///
+
+    const _expr = parseExpression(
+      parser,
+      VibeScriptExpressionKind.WithoutAssignments
+    );
+
+    if (_expr instanceof Error) {
+      return _expr;
+    }
+
+    ///
+
+    const closePtr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+    const closeTok = parser.tokens[closePtr];
+
+    if (closeTok?.kind === 'punc' && closeTok.value === ')') {
+      parser.position = closePtr + 1;
+    } else {
+      return new Error(
+        `expected closing ')' in parenthesized vibe script expression, got '${closeTok?.kind} ${closeTok?.value}'`
+      );
+    }
+
+    expr = _expr;
+  }
+
+  // number literal (so 34, 2, 4 parse as numbers, not vars)
+
+  if (expr === null && nextToken.kind === 'text') {
+    const raw = nextToken.value;
+
+    if (raw == null || raw.length === 0) {
+      return new Error('unexpected empty text/name token parsing expression');
+    }
+
+    const asNumber = Number(raw);
+
+    if (!Number.isNaN(asNumber)) {
+      parser.position += 1;
+
+      expr = {
+        value: asNumber,
+      } as VibeScriptNumberExpression;
+    }
+  }
+
+  // var
+
+  if (expr === null && nextToken.kind === 'text') {
+    const raw = nextToken.value;
+
+    if (raw == null || raw.length === 0) {
+      return new Error(
+        'unexpected empty text/name token parsing vibe script variable expression'
+      );
+    }
+
+    parser.position += 1;
+
+    expr = {
+      varName: raw,
+    };
+  }
+
+  ///
+
+  if (expr === null) {
+    return new Error('unexpected/unknown operand parsing expression');
+  }
+
+  // postfix operators
+
+  while (!parserIsEof(parser)) {
+    const nextPtr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+    const peek = parser.tokens[nextPtr];
+
+    if (peek === undefined) {
+      return new Error('unexpected undefined token parsing expression');
+    }
+
+    if (peek.kind === 'punc' && peek.value === '++') {
+      parser.position = nextPtr + 1;
+
+      expr = {
+        expr,
+        operator: VibeScriptUnaryOp.PostIncrement,
+      } as VibeScriptUnaryOpExpression;
+
+      continue;
+    }
+
+    if (peek.kind === 'punc' && peek.value === '--') {
+      parser.position = nextPtr + 1;
+
+      expr = {
+        expr,
+        operator: VibeScriptUnaryOp.PostDecrement,
+      } as VibeScriptUnaryOpExpression;
+
+      continue;
+    }
+
+    break;
+  }
+
+  return expr;
+};
+
+const parseOperatorWithAssignment = (
+  parser: Parser<VibeScriptToken>
+): VibeScriptOperatorExpression | null | Error => {
+  if (parserIsEof(parser)) {
+    return null;
+  }
+
+  ///
+
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  ///
+
+  const nextToken = parser.tokens[parser.position];
+
+  if (nextToken === undefined) {
+    return null;
+  }
+
+  // end-of-expression delimiters (do not consume)
+  if (
+    nextToken.kind === 'punc' &&
+    (nextToken.value === ')' ||
+      nextToken.value === '}' ||
+      nextToken.value === ',' ||
+      nextToken.value === '-->')
+  ) {
+    return null;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '=') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.Assign,
+    } as VibeScriptOperatorExpression;
+  }
+
+  return parseOperator(parser);
+};
+
+const parseOperator = (
+  parser: Parser<VibeScriptToken>
+): VibeScriptOperatorExpression | null | Error => {
+  if (parserIsEof(parser)) {
+    return null;
+  }
+
+  ///
+
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  ///
+
+  const nextToken = parser.tokens[parser.position];
+
+  if (nextToken === undefined) {
+    return null;
+  }
+
+  // end-of-expression delimiters (do not consume)
+  if (
+    nextToken.kind === 'punc' &&
+    (nextToken.value === ')' ||
+      nextToken.value === '}' ||
+      nextToken.value === ',' ||
+      nextToken.value === '-->')
+  ) {
+    return null;
+  }
+
+  ///
+
+  if (nextToken.kind === 'punc' && nextToken.value === '+') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.Add,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '-') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.Subtract,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '*') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.Multiply,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '/') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.Divide,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '%') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.Modulo,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '&&') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.LogicalAnd,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '||') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.LogicalOr,
+    } as VibeScriptOperatorExpression;
+  }
+
+  return new Error('unsupported operator');
+};
+
+const getOperatorPrecedence = (expr: VibeScriptExpression): number => {
+  if ('binaryOperator' in expr) {
+    switch (expr.binaryOperator) {
+      case VibeScriptBinaryOperator.Multiply:
+      case VibeScriptBinaryOperator.Modulo:
+      case VibeScriptBinaryOperator.Divide:
+        return 100;
+
+      case VibeScriptBinaryOperator.Add:
+      case VibeScriptBinaryOperator.Subtract:
+        return 90;
+
+      case VibeScriptBinaryOperator.LessThan:
+      case VibeScriptBinaryOperator.LessThanOrEqual:
+      case VibeScriptBinaryOperator.GreaterThan:
+      case VibeScriptBinaryOperator.GreaterThanOrEqual:
+      case VibeScriptBinaryOperator.Equal:
+      case VibeScriptBinaryOperator.NotEqual:
+        return 80;
+
+      case VibeScriptBinaryOperator.LogicalAnd:
+        return 70;
+
+      case VibeScriptBinaryOperator.LogicalOr:
+        return 69;
+
+      case VibeScriptBinaryOperator.Assign:
+        return 50;
+
+      default:
+        return 0;
+    }
+  }
+
+  return 0;
+};
 
 const parseExpression = (
   parser: Parser<VibeScriptToken>,
   exprKind: VibeScriptExpressionKind
 ): VibeScriptExpression | Error => {
-  return new Error('not implemented: parseExpression');
+  if (parserIsEof(parser)) {
+    return new Error('unexpected end of file parsing expression');
+  }
+
+  ///
+
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  ///
+
+  const exprStack: VibeScriptExpression[] = [];
+
+  let lastPrecedence = 1000000;
+
+  const lhs = parseOperand(parser);
+
+  if (lhs instanceof Error) {
+    return lhs;
+  }
+
+  exprStack.push(lhs);
+
+  const cont = true;
+
+  while (cont && !parserIsEof(parser)) {
+    let op: VibeScriptOperatorExpression | null | Error;
+
+    if (exprKind === VibeScriptExpressionKind.WithAssignments) {
+      op = parseOperatorWithAssignment(parser);
+    } else {
+      op = parseOperator(parser);
+    }
+
+    if (op instanceof Error) {
+      return op;
+    }
+
+    if (op === null) {
+      break;
+    }
+
+    ///
+
+    const precedence = getOperatorPrecedence(op);
+
+    if (parserIsEof(parser)) {
+      return new Error(
+        'unexpected end of file parsing expression/incomplete math expression'
+      );
+    }
+
+    ///
+
+    parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+    ///
+
+    const rhs = parseOperand(parser);
+
+    if (rhs instanceof Error) {
+      return rhs;
+    }
+
+    ///
+
+    while (precedence <= lastPrecedence && exprStack.length > 1) {
+      const _rhs = exprStack.pop() as VibeScriptExpression;
+
+      const _op = exprStack.pop() as VibeScriptExpression;
+
+      lastPrecedence = getOperatorPrecedence(_op);
+
+      if (lastPrecedence < precedence) {
+        exprStack.push(_op);
+
+        exprStack.push(_rhs);
+
+        break;
+      }
+
+      const _lhs = exprStack.pop() as VibeScriptExpression;
+
+      if ('operator' in _op) {
+        const combinedExpr: VibeScriptBinaryOpExpression = {
+          lhs: _lhs,
+          operator: _op.operator,
+          rhs: _rhs,
+        } as VibeScriptBinaryOpExpression;
+
+        exprStack.push(combinedExpr);
+      } else {
+        return new Error('expected operator expression in expression stack');
+      }
+    }
+
+    exprStack.push(op);
+
+    exprStack.push(rhs);
+
+    lastPrecedence = precedence;
+  }
+
+  while (exprStack.length !== 1) {
+    const _rhs = exprStack.pop() as VibeScriptExpression;
+
+    const _op = exprStack.pop() as VibeScriptExpression;
+
+    const _lhs = exprStack.pop() as VibeScriptExpression;
+
+    if ('operator' in _op) {
+      const combinedExpr: VibeScriptBinaryOpExpression = {
+        lhs: _lhs,
+        operator: _op.operator,
+        rhs: _rhs,
+      } as VibeScriptBinaryOpExpression;
+
+      exprStack.push(combinedExpr);
+    } else {
+      return new Error('expected operator expression in expression stack');
+    }
+  }
+
+  const finalExpr = exprStack.pop();
+
+  if (!finalExpr) {
+    return new Error('failed to parse expression, empty expression stack');
+  }
+
+  return finalExpr;
 };
 
 // parse call
 
 const parseCall = (parser: Parser<VibeScriptToken>): VibeScriptCall | Error => {
-  return new Error('not implemented: parseCall');
+  if (parserIsEof(parser)) {
+    return new Error(
+      'unexpected end of file parsing vibe script call expression'
+    );
+  }
+
+  ///
+
+  const args: VibeScriptExpression[] = [];
+
+  ///
+
+  const nameToken = parser.tokens[parser.position];
+
+  if (nameToken === undefined) {
+    return new Error(
+      'unexpected undefined token parsing vibe script call expression (expected text/function name)'
+    );
+  }
+
+  if (nameToken.kind !== 'text') {
+    return new Error(
+      `expected call name token (text), got '${nameToken.kind}'`
+    );
+  }
+
+  parser.position += 1;
+
+  ///
+
+  const nextPtr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  const nextToken = parser.tokens[nextPtr];
+
+  if (nextToken === undefined) {
+    return new Error(
+      'unexpected undefined token parsing vibe script call expression (expected opening paren)'
+    );
+  }
+
+  if (nextToken.kind !== 'punc' || nextToken.value !== '(') {
+    return new Error(
+      `expected vibe script call expression open paren '(', got '${nextToken.value}'`
+    );
+  }
+
+  parser.position = nextPtr + 1;
+
+  ///
+
+  while (!parserIsEof(parser)) {
+    const nextNextPtr = skipWhitespaceOrNewlines(
+      parser.tokens,
+      parser.position
+    );
+
+    const nextNextToken = parser.tokens[nextNextPtr];
+
+    if (nextNextToken === undefined) {
+      return new Error(
+        'unexpected undefined token parsing vibe script call expression arguments'
+      );
+    }
+
+    if (nextNextToken.kind === 'punc' && nextNextToken.value === ')') {
+      parser.position = nextNextPtr + 1; // consume ')'
+
+      break;
+    }
+
+    if (nextNextToken.kind === 'punc' && nextNextToken.value === ',') {
+      parser.position = nextNextPtr + 1; // consume ','
+    } else {
+      const expr = parseExpression(
+        parser,
+        VibeScriptExpressionKind.WithoutAssignments
+      );
+
+      if (expr instanceof Error) {
+        return expr;
+      }
+
+      args.push(expr);
+    }
+  }
+
+  return {
+    name: nameToken.value as string,
+    args,
+  };
 };
 
 // parse var decl
@@ -1097,7 +1974,7 @@ const parseVarDecl = (
   parser: Parser<VibeScriptToken>
 ): VibeScriptVarDecl | Error => {
   if (parserIsEof(parser)) {
-    return new Error('unexpected end of file parsing prompt script statement');
+    return new Error('unexpected end of file parsing vibe script statement');
   }
 
   ///
@@ -1193,7 +2070,7 @@ const parseVarDeclStatement = (
 
   const expr = parseExpression(
     parser,
-    VibeScriptExpressionKind.WitoutAssignments
+    VibeScriptExpressionKind.WithoutAssignments
   );
 
   if (expr instanceof Error) {
@@ -1331,7 +2208,7 @@ const parseStatement = (
   parser: Parser<VibeScriptToken>
 ): VibeScriptStatement | Error => {
   if (parserIsEof(parser)) {
-    return new Error('unexpected end of file parsing prompt script statement');
+    return new Error('unexpected end of file parsing vibe script statement');
   }
 
   ///
@@ -1563,7 +2440,7 @@ const parseTextBlock = (
   parser: Parser<VibeScriptToken>
 ): VibeScriptTextBlock | Error => {
   if (parserIsEof(parser)) {
-    return new Error('unexpected end of file parsing vibe script text block');
+    return new Error('unexpected end of file parsing vibe script block');
   }
 
   ///
@@ -1581,10 +2458,69 @@ const parseTextBlock = (
       break;
     }
 
-    // interpolation start (`${`)
+    // interpolation start: `${`
 
     if (t.kind === 'text' && t.value != null && t.value.endsWith('$')) {
-      return new Error('not implemented: parseTextBlock interpolation');
+      const next = parser.tokens[parser.position + 1];
+
+      if (next?.kind === 'punc' && next.value === '{') {
+        const prefix = t.value.slice(0, -1);
+
+        if (prefix.length > 0) {
+          quasis += prefix;
+        }
+
+        // consume the `$...` token + the `{`
+        parser.position += 2;
+
+        tokenCount += 2;
+
+        if (quasis.length > 0) {
+          parts.push({
+            quasis,
+          } as VibeScriptTextLiteralQuasis);
+
+          quasis = '';
+        }
+
+        const exprStartPos = parser.position;
+
+        const expr = parseExpression(
+          parser,
+          VibeScriptExpressionKind.WithoutAssignments
+        );
+
+        if (expr instanceof Error) {
+          return expr;
+        }
+
+        tokenCount += parser.position - exprStartPos;
+
+        const closeStartPos = parser.position;
+
+        const closePtr = skipWhitespaceOrNewlines(
+          parser.tokens,
+          parser.position
+        );
+
+        const closeTok = parser.tokens[closePtr];
+
+        if (closeTok?.kind !== 'punc' || closeTok.value !== '}') {
+          return new Error(
+            `expected closing brace '}', got '${closeTok?.kind} ${closeTok?.value}'`
+          );
+        }
+
+        parser.position = closePtr + 1;
+
+        tokenCount += parser.position - closeStartPos;
+
+        parts.push({
+          expr,
+        } as VibeScriptTextLiteralExpression);
+
+        continue;
+      }
     }
 
     // normal text accumulation
