@@ -1,7 +1,10 @@
 import {
   type ChatCompletionMessage,
-  CONSOLE_LOG,
   type LLMThinking,
+  LLM_REQUEST_HARDCAP_MS,
+  type LLMTokenUsage,
+  estimateTokensForMessages,
+  estimateTokensForText,
 } from './llm-base';
 
 // models
@@ -96,10 +99,6 @@ export const completeChatGemini = async ({
 
   const _url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  if (CONSOLE_LOG) {
-    console.log(_url);
-  }
-
   const isProLikeModel =
     model === 'gemini-2.5-pro' || model === 'gemini-3-pro-preview';
 
@@ -152,9 +151,9 @@ export const completeChatGemini = async ({
     generationConfig,
   });
 
-  if (CONSOLE_LOG) {
-    console.log(_body);
-  }
+  const controller = new AbortController();
+
+  const timer = setTimeout(() => controller.abort(), LLM_REQUEST_HARDCAP_MS);
 
   const response = await fetch(_url, {
     method: 'POST',
@@ -162,13 +161,14 @@ export const completeChatGemini = async ({
       'Content-Type': 'application/json',
     },
     body: _body,
+    signal: controller.signal,
   });
 
-  if (CONSOLE_LOG) {
-    console.log(response);
-  }
+  clearTimeout(timer);
 
   if (!response.ok) {
+    console.error(await response.text());
+
     return new Error(`HTTP error! status: ${response.status}`);
   }
 
@@ -178,14 +178,96 @@ export const completeChatGemini = async ({
     return new Error('Invalid Gemini chat completion response');
   }
 
-  if (CONSOLE_LOG) {
-    console.log(json);
-  }
-
   return json as GeminiChatCompletionResponse;
 };
 
-// conversion
+export const completeChat = async ({
+  apiKey,
+  model,
+  messages,
+  thinking,
+}: {
+  apiKey?: string;
+  model: GeminiLLMModel;
+  messages: ChatCompletionMessage[] | string;
+  thinking?: LLMThinking;
+}): Promise<[string | null, LLMTokenUsage] | Error> => {
+  if (!apiKey) {
+    return new Error('Gemini API key is not set');
+  }
+
+  const thinkingBudget = getGeminiThinkingBudget(model, thinking);
+
+  const response = await completeChatGemini({
+    apiKey,
+    model,
+    messages: toGeminiChatCompletionRequestMessages(messages),
+    thinkingBudget,
+  });
+
+  if (response instanceof Error) {
+    return response;
+  }
+
+  const raw =
+    response.candidates[0]?.content.parts.map(part => part.text).join('\n') ??
+    null;
+
+  const promptTokens = response.usageMetadata?.promptTokenCount;
+  const completionTokens = response.usageMetadata?.candidatesTokenCount;
+  const totalTokens = response.usageMetadata?.totalTokenCount;
+
+  let estimated = false;
+
+  const inputTokens = (() => {
+    if (typeof promptTokens === 'number' && Number.isFinite(promptTokens)) {
+      return promptTokens;
+    }
+
+    estimated = true;
+
+    return estimateTokensForMessages(messages);
+  })();
+
+  const outputTokens = (() => {
+    if (
+      typeof completionTokens === 'number' &&
+      Number.isFinite(completionTokens)
+    ) {
+      return completionTokens;
+    }
+
+    estimated = true;
+
+    return estimateTokensForText(raw ?? '');
+  })();
+
+  const thinkingTokens = 0;
+
+  const total = (() => {
+    if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
+      return totalTokens;
+    }
+
+    if (estimated === false) {
+      estimated = true;
+    }
+
+    return inputTokens + outputTokens + thinkingTokens;
+  })();
+
+  const tokens: LLMTokenUsage = {
+    inputTokens,
+    outputTokens,
+    thinkingTokens,
+    totalTokens: total,
+    estimated,
+  };
+
+  return [raw, tokens];
+};
+
+// message mapping
 
 export const toGeminiChatCompletionRequestMessages = (
   messages: ChatCompletionMessage[] | string
@@ -207,13 +289,15 @@ export const toGeminiChatCompletionRequestMessages = (
       });
 };
 
+// heuristics
+
 const isProLikeModel = (model: GeminiLLMModel): boolean =>
   model === 'gemini-2.5-pro' || model === 'gemini-3-pro-preview';
 
 const maxThinkingBudget = (model: GeminiLLMModel): number =>
   isProLikeModel(model) ? 32768 : 24576;
 
-export const getThinkingBudget = (
+export const getGeminiThinkingBudget = (
   model: GeminiLLMModel,
   thinking?: LLMThinking
 ): number | undefined => {

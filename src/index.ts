@@ -29,9 +29,12 @@ import * as fs from 'node:fs/promises';
 import * as vibe from './vibe';
 
 async function main() {
+  const promptName = 'test01';
+  // const promptName = 'untitled';
+
   const promptsDir = path.join(process.cwd(), 'prompts');
 
-  const untitledPrompt = path.join(promptsDir, 'untitled.md');
+  const untitledPrompt = path.join(promptsDir, `${promptName}.md`);
 
   const contents = await fs.readFile(untitledPrompt, 'utf-8');
 
@@ -43,15 +46,17 @@ async function main() {
     process.exit(1);
   }
 
-  const checked = vibe.typeCheckVibeScript(parsed);
+  console.dir(parsed, { depth: null });
 
-  if (checked instanceof Error) {
-    console.error(checked);
+  // const checked = vibe.typeCheckVibeScript(parsed);
 
-    process.exit(1);
-  }
+  // if (checked instanceof Error) {
+  //   console.error(checked);
 
-  console.dir(checked, { depth: null });
+  //   process.exit(1);
+  // }
+
+  // console.dir(checked, { depth: null });
 }
 
 main().catch(err => {

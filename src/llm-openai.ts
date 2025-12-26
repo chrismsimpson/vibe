@@ -1,7 +1,10 @@
 import {
   type ChatCompletionMessage,
-  CONSOLE_LOG,
   type LLMThinking,
+  LLM_REQUEST_HARDCAP_MS,
+  type LLMTokenUsage,
+  estimateTokensForMessages,
+  estimateTokensForText,
 } from './llm-base';
 import { z } from 'zod';
 
@@ -127,10 +130,6 @@ export const completeChatOpenAI = async ({
 
   const _url = 'https://api.openai.com/v1/chat/completions';
 
-  if (CONSOLE_LOG) {
-    console.log(_url);
-  }
-
   const _reasoningEffort = reasoningEffort ?? defaultReasoningEffort;
 
   const _body = JSON.stringify(
@@ -146,14 +145,9 @@ export const completeChatOpenAI = async ({
         }
   );
 
-  if (CONSOLE_LOG) {
-    console.log(_body);
-  }
-
   const controller = new AbortController();
 
-  const REQUEST_HARDCAP_MS = 10 * 60_000; // 10 minutes
-  const timer = setTimeout(() => controller.abort(), REQUEST_HARDCAP_MS);
+  const timer = setTimeout(() => controller.abort(), LLM_REQUEST_HARDCAP_MS);
 
   const response = await fetch(_url, {
     method: 'POST',
@@ -167,11 +161,9 @@ export const completeChatOpenAI = async ({
 
   clearTimeout(timer);
 
-  if (CONSOLE_LOG) {
-    console.log(response);
-  }
-
   if (!response.ok) {
+    console.error(await response.text());
+
     return new Error(`HTTP error! status: ${response.status}`);
   }
 
@@ -181,14 +173,102 @@ export const completeChatOpenAI = async ({
     return new Error('Invalid OpenAI chat completion response');
   }
 
-  if (CONSOLE_LOG) {
-    console.log(json);
-  }
-
   return json as OpenAIChatCompletionResponse;
 };
 
-// conversion
+export const completeChat = async ({
+  apiKey,
+  model,
+  messages,
+  thinking,
+}: {
+  apiKey?: string;
+  model: OpenAILLMModel;
+  messages: ChatCompletionMessage[] | string;
+  thinking?: LLMThinking;
+}): Promise<[string | null, LLMTokenUsage] | Error> => {
+  if (!apiKey) {
+    return new Error('OpenAI API key is not set');
+  }
+
+  const reasoningEffort = getReasoningEffort(thinking);
+
+  const response = await completeChatOpenAI({
+    apiKey,
+    model,
+    messages: toOpenAIChatCompletionRequestMessages(model, messages),
+    reasoningEffort,
+  });
+
+  if (response instanceof Error) {
+    return response;
+  }
+
+  const raw = response.choices[0]?.message.content ?? null;
+
+  const promptTokens = response.usage?.prompt_tokens;
+  const completionTokens = response.usage?.completion_tokens;
+  const totalTokens = response.usage?.total_tokens;
+
+  const reasoningTokens =
+    response.usage?.completion_tokens_details?.reasoning_tokens ??
+    response.usage?.reasoning_tokens ??
+    0;
+
+  let estimated = false;
+
+  const inputTokens = (() => {
+    if (typeof promptTokens === 'number' && Number.isFinite(promptTokens)) {
+      return promptTokens;
+    }
+
+    estimated = true;
+
+    return estimateTokensForMessages(messages);
+  })();
+
+  const outputTokens = (() => {
+    if (
+      typeof completionTokens === 'number' &&
+      Number.isFinite(completionTokens)
+    ) {
+      return completionTokens;
+    }
+
+    estimated = true;
+
+    return estimateTokensForText(raw ?? '');
+  })();
+
+  const thinkingTokens =
+    typeof reasoningTokens === 'number' && Number.isFinite(reasoningTokens)
+      ? reasoningTokens
+      : 0;
+
+  const total = (() => {
+    if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
+      return totalTokens;
+    }
+
+    if (estimated === false) {
+      estimated = true;
+    }
+
+    return inputTokens + outputTokens + thinkingTokens;
+  })();
+
+  const tokens: LLMTokenUsage = {
+    inputTokens,
+    outputTokens,
+    thinkingTokens,
+    totalTokens: total,
+    estimated,
+  };
+
+  return [raw, tokens];
+};
+
+// message mapping
 
 export const toOpenAIChatCompletionRequestMessages = (
   model: OpenAILLMModel,
@@ -210,6 +290,8 @@ export const toOpenAIChatCompletionRequestMessages = (
         };
       });
 };
+
+// heuristics
 
 export const getReasoningEffort = (
   thinking?: LLMThinking
