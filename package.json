@@ -5,6 +5,7 @@
   "scripts": {
     "start": "ts-node src/index.ts",
     "vibe": "ts-node src/run.ts",
+    "archive": "ts-node src/archive.ts",
     "build": "tsc"
   },
   "dependencies": {

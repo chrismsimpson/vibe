@@ -40,7 +40,7 @@ const isVibeScriptPunc = (char: string): boolean => {
     char === '@' ||
     char === '~' ||
     char === '#' ||
-    char === '$' ||
+    // char === '$' || // excluding dollar sign so string interpolation works correctly
     char === '%' ||
     char === '^' ||
     char === '&' ||
@@ -131,6 +131,72 @@ export const lexVibeScriptToken = (lexer: Lexer): VibeScriptToken | Error => {
     }
 
     // operator punc
+
+    if (peek === '=' && lexerMatch(lexer, '==', 1)) {
+      const startPunc = lexer.position;
+
+      lexer.position += 3;
+
+      return {
+        kind: 'punc',
+        value: lexer.source.contents.slice(startPunc, lexer.position),
+      };
+    }
+
+    if (peek === '!' && lexerMatch(lexer, '==', 1)) {
+      const startPunc = lexer.position;
+
+      lexer.position += 3;
+
+      return {
+        kind: 'punc',
+        value: lexer.source.contents.slice(startPunc, lexer.position),
+      };
+    }
+
+    if (peek === '=' && lexerMatch(lexer, '=', 1)) {
+      const startPunc = lexer.position;
+
+      lexer.position += 2;
+
+      return {
+        kind: 'punc',
+        value: lexer.source.contents.slice(startPunc, lexer.position),
+      };
+    }
+
+    if (peek === '!' && lexerMatch(lexer, '=', 1)) {
+      const startPunc = lexer.position;
+
+      lexer.position += 2;
+
+      return {
+        kind: 'punc',
+        value: lexer.source.contents.slice(startPunc, lexer.position),
+      };
+    }
+
+    if (peek === '<' && lexerMatch(lexer, '=', 1)) {
+      const startPunc = lexer.position;
+
+      lexer.position += 2;
+
+      return {
+        kind: 'punc',
+        value: lexer.source.contents.slice(startPunc, lexer.position),
+      };
+    }
+
+    if (peek === '>' && lexerMatch(lexer, '=', 1)) {
+      const startPunc = lexer.position;
+
+      lexer.position += 2;
+
+      return {
+        kind: 'punc',
+        value: lexer.source.contents.slice(startPunc, lexer.position),
+      };
+    }
 
     if (peek === '&' && lexerMatch(lexer, '&', 1)) {
       const startPunc = lexer.position;
@@ -346,6 +412,10 @@ export type VibeScriptNumberExpression = {
   value: number;
 };
 
+export type VibeScriptStringExpression = {
+  value: string;
+};
+
 export type VibeScriptVarExpression = {
   varName: string;
 };
@@ -364,6 +434,7 @@ export enum VibeScriptUnaryOperator {
   PostIncrement = 'PostIncrement',
   PreDecrement = 'PreDecrement',
   PostDecrement = 'PostDecrement',
+  LogicalNot = 'LogicalNot',
 }
 
 export type VibeScriptUnaryOperatorExpression = {
@@ -388,7 +459,7 @@ export enum VibeScriptBinaryOperator {
   Assign = 'Assign',
 }
 
-export type VibeScriptBinaryOpExpression = {
+export type VibeScriptBinaryOperatorExpression = {
   lhs: VibeScriptExpression;
   operator: VibeScriptBinaryOperator;
   rhs: VibeScriptExpression;
@@ -405,10 +476,11 @@ export type VibeScriptOperatorExpression = {
 export type VibeScriptExpression =
   | VibeScriptBooleanExpression
   | VibeScriptNumberExpression
+  | VibeScriptStringExpression
   | VibeScriptVarExpression
   | VibeScriptCallExpression
   | VibeScriptUnaryOperatorExpression
-  | VibeScriptBinaryOpExpression
+  | VibeScriptBinaryOperatorExpression
   | VibeScriptOperatorExpression;
 
 // statements
@@ -1308,7 +1380,7 @@ const parseStep = (parser: Parser<VibeScriptToken>): VibeScriptStep | Error => {
         );
       }
 
-      if (kw.value === 'expects') {
+      if (kw.value === 'expect') {
         parser.position += 1;
 
         ///
@@ -1422,8 +1494,48 @@ const parseStep = (parser: Parser<VibeScriptToken>): VibeScriptStep | Error => {
 
 // parse expression
 
+const parseStringLiteral = (
+  parser: Parser<VibeScriptToken>,
+  quote: '"' | "'"
+): VibeScriptStringExpression | Error => {
+  const open = parser.tokens[parser.position];
+
+  if (open?.kind !== 'punc' || open.value !== quote) {
+    return new Error('internal error: expected string quote');
+  }
+
+  parser.position += 1; // consume opening quote
+
+  let acc = '';
+
+  while (!parserIsEof(parser)) {
+    const t = parser.tokens[parser.position];
+
+    if (!t) {
+      break;
+    }
+
+    if (t.kind === 'newline') {
+      return new Error('unterminated string literal (newline)');
+    }
+
+    if (t.kind === 'punc' && t.value === quote) {
+      parser.position += 1; // consume closing quote
+
+      return { value: acc };
+    }
+
+    acc += t.value ?? '';
+
+    parser.position += 1;
+  }
+
+  return new Error('unterminated string literal (eof)');
+};
+
 const parseOperand = (
-  parser: Parser<VibeScriptToken>
+  parser: Parser<VibeScriptToken>,
+  exprKind: VibeScriptExpressionKind
 ): VibeScriptExpression | Error => {
   if (parserIsEof(parser)) {
     return new Error('unexpected end of file parsing vibe script operand');
@@ -1482,7 +1594,22 @@ const parseOperand = (
     };
   }
 
-  // logcal and (as operator-expression, mostly for error tolerance)
+  // string literal
+
+  if (
+    expr === null &&
+    nextToken.kind === 'punc' &&
+    (nextToken.value === '"' || nextToken.value === "'")
+  ) {
+    const s = parseStringLiteral(parser, nextToken.value as '"' | "'");
+
+    if (s instanceof Error) {
+      return s;
+    }
+    expr = s;
+  }
+
+  // logical and (as operator-expression, mostly for error tolerance)
 
   if (expr === null && nextToken.kind === 'punc' && nextToken.value === '&&') {
     parser.position += 1;
@@ -1505,7 +1632,18 @@ const parseOperand = (
   // logical not
 
   if (expr === null && nextToken.kind === 'punc' && nextToken.value === '!') {
-    return new Error('logical not parsing not implemented yet');
+    parser.position += 1;
+
+    const inner = parseOperand(parser, exprKind);
+
+    if (inner instanceof Error) {
+      return inner;
+    }
+
+    expr = {
+      expr: inner,
+      operator: VibeScriptUnaryOperator.LogicalNot,
+    } as VibeScriptUnaryOperatorExpression;
   }
 
   // call
@@ -1538,10 +1676,7 @@ const parseOperand = (
 
     ///
 
-    const _expr = parseExpression(
-      parser,
-      VibeScriptExpressionKind.WithoutAssignments
-    );
+    const _expr = parseExpression(parser, exprKind);
 
     if (_expr instanceof Error) {
       return _expr;
@@ -1776,44 +1911,92 @@ const parseOperator = (
     } as VibeScriptOperatorExpression;
   }
 
+  if (nextToken.kind === 'punc' && nextToken.value === '==') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.Equal,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '!=') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.NotEqual,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '<=') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.LessThanOrEqual,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '>=') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.GreaterThanOrEqual,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '<') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.LessThan,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '>') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.GreaterThan,
+    } as VibeScriptOperatorExpression;
+  }
+
   return new Error('unsupported operator');
 };
 
 const getOperatorPrecedence = (expr: VibeScriptExpression): number => {
-  if ('binaryOperator' in expr) {
-    switch (expr.binaryOperator) {
-      case VibeScriptBinaryOperator.Multiply:
-      case VibeScriptBinaryOperator.Modulo:
-      case VibeScriptBinaryOperator.Divide:
-        return 100;
-
-      case VibeScriptBinaryOperator.Add:
-      case VibeScriptBinaryOperator.Subtract:
-        return 90;
-
-      case VibeScriptBinaryOperator.LessThan:
-      case VibeScriptBinaryOperator.LessThanOrEqual:
-      case VibeScriptBinaryOperator.GreaterThan:
-      case VibeScriptBinaryOperator.GreaterThanOrEqual:
-      case VibeScriptBinaryOperator.Equal:
-      case VibeScriptBinaryOperator.NotEqual:
-        return 80;
-
-      case VibeScriptBinaryOperator.LogicalAnd:
-        return 70;
-
-      case VibeScriptBinaryOperator.LogicalOr:
-        return 69;
-
-      case VibeScriptBinaryOperator.Assign:
-        return 50;
-
-      default:
-        return 0;
-    }
+  if (!('operator' in expr)) {
+    return 0;
   }
 
-  return 0;
+  switch (expr.operator) {
+    case VibeScriptBinaryOperator.Multiply:
+    case VibeScriptBinaryOperator.Modulo:
+    case VibeScriptBinaryOperator.Divide:
+      return 100;
+
+    case VibeScriptBinaryOperator.Add:
+    case VibeScriptBinaryOperator.Subtract:
+      return 90;
+
+    case VibeScriptBinaryOperator.LessThan:
+    case VibeScriptBinaryOperator.LessThanOrEqual:
+    case VibeScriptBinaryOperator.GreaterThan:
+    case VibeScriptBinaryOperator.GreaterThanOrEqual:
+    case VibeScriptBinaryOperator.Equal:
+    case VibeScriptBinaryOperator.NotEqual:
+      return 80;
+
+    case VibeScriptBinaryOperator.LogicalAnd:
+      return 70;
+
+    case VibeScriptBinaryOperator.LogicalOr:
+      return 69;
+
+    case VibeScriptBinaryOperator.Assign:
+      return 50;
+
+    default:
+      return 0;
+  }
 };
 
 const parseExpression = (
@@ -1834,7 +2017,7 @@ const parseExpression = (
 
   let lastPrecedence = 1000000;
 
-  const lhs = parseOperand(parser);
+  const lhs = parseOperand(parser, exprKind);
 
   if (lhs instanceof Error) {
     return lhs;
@@ -1877,7 +2060,7 @@ const parseExpression = (
 
     ///
 
-    const rhs = parseOperand(parser);
+    const rhs = parseOperand(parser, exprKind);
 
     if (rhs instanceof Error) {
       return rhs;
@@ -1903,11 +2086,11 @@ const parseExpression = (
       const _lhs = exprStack.pop() as VibeScriptExpression;
 
       if ('operator' in _op) {
-        const combinedExpr: VibeScriptBinaryOpExpression = {
+        const combinedExpr: VibeScriptBinaryOperatorExpression = {
           lhs: _lhs,
           operator: _op.operator,
           rhs: _rhs,
-        } as VibeScriptBinaryOpExpression;
+        } as VibeScriptBinaryOperatorExpression;
 
         exprStack.push(combinedExpr);
       } else {
@@ -1930,11 +2113,11 @@ const parseExpression = (
     const _lhs = exprStack.pop() as VibeScriptExpression;
 
     if ('operator' in _op) {
-      const combinedExpr: VibeScriptBinaryOpExpression = {
+      const combinedExpr: VibeScriptBinaryOperatorExpression = {
         lhs: _lhs,
         operator: _op.operator,
         rhs: _rhs,
-      } as VibeScriptBinaryOpExpression;
+      } as VibeScriptBinaryOperatorExpression;
 
       exprStack.push(combinedExpr);
     } else {
@@ -2029,7 +2212,7 @@ const parseCall = (parser: Parser<VibeScriptToken>): VibeScriptCall | Error => {
     } else {
       const expr = parseExpression(
         parser,
-        VibeScriptExpressionKind.WithoutAssignments
+        VibeScriptExpressionKind.WithAssignments
       );
 
       if (expr instanceof Error) {
@@ -2168,7 +2351,7 @@ const parseVarDeclStatement = (
 
   const expr = parseExpression(
     parser,
-    VibeScriptExpressionKind.WithoutAssignments
+    VibeScriptExpressionKind.WithAssignments
   );
 
   if (expr instanceof Error) {
@@ -2593,7 +2776,7 @@ const parseTextBlock = (
 
         const expr = parseExpression(
           parser,
-          VibeScriptExpressionKind.WithoutAssignments
+          VibeScriptExpressionKind.WithAssignments
         );
 
         if (expr instanceof Error) {
@@ -2742,6 +2925,12 @@ export type CheckedVibeScriptNumberExpression = {
   typeId: number;
 };
 
+export type CheckedVibeScriptStringExpression = {
+  kind: 'string';
+  value: string;
+  typeId: number;
+};
+
 export type CheckedVibeScriptVarExpression = {
   kind: 'var';
   name: string;
@@ -2779,6 +2968,7 @@ export type CheckedVibeScriptUnknownExpression = {
 export type CheckedVibeScriptExpression =
   | CheckedVibeScriptBooleanExpression
   | CheckedVibeScriptNumberExpression
+  | CheckedVibeScriptStringExpression
   | CheckedVibeScriptVarExpression
   | CheckedVibeScriptCallExpression
   | CheckedVibeScriptUnaryExpression
@@ -3541,7 +3731,32 @@ const typeCheckUnary = (
     return checkedExpr;
   }
 
-  // For now: ++ / -- require number (or unknown), produce number (or unknown).
+  if (operator === VibeScriptUnaryOperator.LogicalNot) {
+    if (
+      checkedExpr.typeId !== UnknownTypeId &&
+      checkedExpr.typeId !== BooleanTypeId
+    ) {
+      return new Error(
+        `unary ! expects boolean, got '${typeNameForTypeId(context, checkedExpr.typeId)}'`
+      );
+    }
+
+    const unifiedTypeId = unifyWithType(context, BooleanTypeId, typeHint);
+
+    if (unifiedTypeId instanceof Error) {
+      return unifiedTypeId;
+    }
+
+    return {
+      kind: 'unary',
+      operator,
+      expr: checkedExpr,
+      typeId: unifiedTypeId,
+    };
+  }
+
+  // For now: ++ / -- require number (or unknown), produce number (or unknown)
+
   if (
     checkedExpr.typeId !== UnknownTypeId &&
     checkedExpr.typeId !== NumberTypeId
@@ -3758,6 +3973,22 @@ const typeCheckExpression = (
 
     return {
       kind: 'number',
+      value: expr.value,
+      typeId: unifiedTypeId,
+    };
+  }
+
+  // string literal
+
+  if ('value' in expr && typeof expr.value === 'string') {
+    const unifiedTypeId = unifyWithType(context, StringTypeId, typeHint);
+
+    if (unifiedTypeId instanceof Error) {
+      return unifiedTypeId;
+    }
+
+    return {
+      kind: 'string',
       value: expr.value,
       typeId: unifiedTypeId,
     };

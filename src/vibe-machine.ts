@@ -223,7 +223,7 @@ const takeLastRuntime = (
 
   if (count === null) {
     if (value.length === 0) {
-      return [null, null];
+      return null;
     }
 
     return value[value.length - 1];
@@ -330,11 +330,15 @@ const evalExpression = (
 ): unknown | Error => {
   // literals
 
+  if (expr.kind === 'boolean') {
+    return expr.value;
+  }
+
   if (expr.kind === 'number') {
     return expr.value;
   }
 
-  if (expr.kind === 'boolean') {
+  if (expr.kind === 'string') {
     return expr.value;
   }
 
@@ -418,6 +422,20 @@ const evalExpression = (
 
   // unary
   if (expr.kind === 'unary') {
+    if (expr.operator === VibeScriptUnaryOperator.LogicalNot) {
+      const v = evalExpression(expr.expr, env, context);
+
+      if (v instanceof Error) {
+        return v;
+      }
+
+      if (typeof v !== 'boolean') {
+        return new Error('logical not used on non-boolean');
+      }
+
+      return !v;
+    }
+
     // For now: only support ++/-- on variables
 
     if (expr.expr.kind !== 'var') {
@@ -550,10 +568,80 @@ const evalExpression = (
       }
     }
 
+    if (op === VibeScriptBinaryOperator.Equal) {
+      return lhs === rhs;
+    }
+
+    if (op === VibeScriptBinaryOperator.NotEqual) {
+      return lhs !== rhs;
+    }
+
+    if (
+      op === VibeScriptBinaryOperator.LessThan ||
+      op === VibeScriptBinaryOperator.LessThanOrEqual ||
+      op === VibeScriptBinaryOperator.GreaterThan ||
+      op === VibeScriptBinaryOperator.GreaterThanOrEqual
+    ) {
+      // Prefer numeric compare when possible
+      if (typeof lhs === 'number' && typeof rhs === 'number') {
+        if (op === VibeScriptBinaryOperator.LessThan) {
+          return lhs < rhs;
+        }
+
+        if (op === VibeScriptBinaryOperator.LessThanOrEqual) {
+          return lhs <= rhs;
+        }
+
+        if (op === VibeScriptBinaryOperator.GreaterThan) {
+          return lhs > rhs;
+        }
+
+        return lhs >= rhs;
+      }
+
+      if (typeof lhs === 'string' && typeof rhs === 'string') {
+        if (op === VibeScriptBinaryOperator.LessThan) {
+          return lhs < rhs;
+        }
+
+        if (op === VibeScriptBinaryOperator.LessThanOrEqual) {
+          return lhs <= rhs;
+        }
+
+        if (op === VibeScriptBinaryOperator.GreaterThan) {
+          return lhs > rhs;
+        }
+
+        return lhs >= rhs;
+      }
+
+      const ln = Number(lhs);
+      const rn = Number(rhs);
+
+      if (Number.isNaN(ln) || Number.isNaN(rn)) {
+        return new Error('comparison operator used on incompatible values');
+      }
+
+      if (op === VibeScriptBinaryOperator.LessThan) {
+        return ln < rn;
+      }
+
+      if (op === VibeScriptBinaryOperator.LessThanOrEqual) {
+        return ln <= rn;
+      }
+
+      if (op === VibeScriptBinaryOperator.GreaterThan) {
+        return ln > rn;
+      }
+
+      return ln >= rn;
+    }
+
     return new Error('unsupported binary operator at runtime');
   }
 
   // unknown
+
   return new Error('unknown expression kind at runtime');
 };
 
