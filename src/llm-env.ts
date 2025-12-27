@@ -7,6 +7,7 @@ import {
   type LLMModel,
   completeChatModel as baseCompleteChatModel,
   completeChat as baseCompleteChat,
+  type LLMCompleteChat,
 } from './llm';
 import { env } from './env';
 
@@ -32,7 +33,7 @@ export const completeChatModel = async ({
   });
 };
 
-export const completeChat = async ({
+export const completeChat: LLMCompleteChat = async ({
   models,
   messages,
   thinking,

@@ -30,8 +30,8 @@ import * as vibe from './vibe';
 
 async function main() {
   // const promptName = 'test01';
-  const promptName = 'test02';
-  // const promptName = 'untitled';
+  // const promptName = 'test02';
+  const promptName = 'untitled';
 
   const promptsDir = path.join(process.cwd(), 'prompts');
 

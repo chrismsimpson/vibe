@@ -32,7 +32,7 @@ export type LLMAccounting = {
   costUnits: number;
 };
 
-const tokenSplitRegex = /\s+/; // UN export?
+const tokenSplitRegex = /\s+/;
 
 export const estimateTokensForText = (text: string): number => {
   const words = text.split(tokenSplitRegex).filter(w => w.length > 0);

@@ -20,6 +20,12 @@ import {
 
 export type LLMModel = GeminiLLMModel | OpenAILLMModel;
 
+export type LLMCompleteChat = (args: {
+  models: (() => LLMModel[]) | LLMModel[] | LLMModel;
+  messages: ChatCompletionMessage[] | string;
+  thinking?: LLMThinking;
+}) => Promise<[string, string | null, LLMAccounting] | Error>;
+
 export const shuffle = (): LLMModel[] => {
   console.log('Shuffling models');
   return ldShuffle([
