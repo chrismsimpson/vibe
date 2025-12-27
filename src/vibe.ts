@@ -10,6 +10,7 @@ import {
 import * as fsSync from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { skip } from 'node:test';
 
 // lexing
 
@@ -38,6 +39,12 @@ const isVibeScriptPunc = (char: string): boolean => {
     char === '_' ||
     char === '@' ||
     char === '~' ||
+    char === '#' ||
+    char === '$' ||
+    char === '%' ||
+    char === '^' ||
+    char === '&' ||
+    char === '|' ||
     char === '!' ||
     char === '?' ||
     char === '+' ||
@@ -116,6 +123,52 @@ export const lexVibeScriptToken = (lexer: Lexer): VibeScriptToken | Error => {
       const startPunc = lexer.position;
 
       lexer.position += 3;
+
+      return {
+        kind: 'punc',
+        value: lexer.source.contents.slice(startPunc, lexer.position),
+      };
+    }
+
+    // operator punc
+
+    if (peek === '&' && lexerMatch(lexer, '&', 1)) {
+      const startPunc = lexer.position;
+
+      lexer.position += 2;
+
+      return {
+        kind: 'punc',
+        value: lexer.source.contents.slice(startPunc, lexer.position),
+      };
+    }
+
+    if (peek === '|' && lexerMatch(lexer, '|', 1)) {
+      const startPunc = lexer.position;
+
+      lexer.position += 2;
+
+      return {
+        kind: 'punc',
+        value: lexer.source.contents.slice(startPunc, lexer.position),
+      };
+    }
+
+    if (peek === '+' && lexerMatch(lexer, '+', 1)) {
+      const startPunc = lexer.position;
+
+      lexer.position += 2;
+
+      return {
+        kind: 'punc',
+        value: lexer.source.contents.slice(startPunc, lexer.position),
+      };
+    }
+
+    if (peek === '-' && lexerMatch(lexer, '-', 1)) {
+      const startPunc = lexer.position;
+
+      lexer.position += 2;
 
       return {
         kind: 'punc',
@@ -306,16 +359,16 @@ export type VibeScriptCallExpression = {
   call: VibeScriptCall;
 };
 
-export enum VibeScriptUnaryOp {
+export enum VibeScriptUnaryOperator {
   PreIncrement = 'PreIncrement',
   PostIncrement = 'PostIncrement',
   PreDecrement = 'PreDecrement',
   PostDecrement = 'PostDecrement',
 }
 
-export type VibeScriptUnaryOpExpression = {
+export type VibeScriptUnaryOperatorExpression = {
   expr: VibeScriptExpression;
-  operator: VibeScriptUnaryOp;
+  operator: VibeScriptUnaryOperator;
 };
 
 export enum VibeScriptBinaryOperator {
@@ -341,7 +394,9 @@ export type VibeScriptBinaryOpExpression = {
   rhs: VibeScriptExpression;
 };
 
-export type VibeScriptOperator = VibeScriptUnaryOp | VibeScriptBinaryOperator;
+export type VibeScriptOperator =
+  | VibeScriptUnaryOperator
+  | VibeScriptBinaryOperator;
 
 export type VibeScriptOperatorExpression = {
   operator: VibeScriptOperator;
@@ -352,7 +407,7 @@ export type VibeScriptExpression =
   | VibeScriptNumberExpression
   | VibeScriptVarExpression
   | VibeScriptCallExpression
-  | VibeScriptUnaryOpExpression
+  | VibeScriptUnaryOperatorExpression
   | VibeScriptBinaryOpExpression
   | VibeScriptOperatorExpression;
 
@@ -371,6 +426,7 @@ export type VibeScriptFileIncludeBlock = {
 export type VibeScriptStatement =
   | VibeScriptPreambleBlock
   | VibeScriptVarDeclarationStatement
+  | VibeScriptStep
   | VibeScriptFileIncludeBlock;
 
 // blocks
@@ -1142,6 +1198,25 @@ const parseStep = (parser: Parser<VibeScriptToken>): VibeScriptStep | Error => {
 
   parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
 
+  const nextToken = parser.tokens[parser.position];
+
+  if (nextToken === undefined) {
+    return new Error(
+      'unexpected undefined token parsing step statement (expected "step")'
+    );
+  }
+
+  if (nextToken.kind !== 'text' || nextToken.value !== 'step') {
+    return new Error(
+      `expected step statement 'step' keyword, got '${nextToken.kind} ${nextToken.value}'`
+    );
+  }
+
+  parser.position = skipWhitespaceOrNewlines(
+    parser.tokens,
+    parser.position + 1
+  );
+
   ///
 
   const colonToken = parser.tokens[parser.position];
@@ -1370,7 +1445,10 @@ const parseOperand = (
     return new Error('unexpected undefined token parsing vibe script operand');
   }
 
-  const nextNextPtr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+  const nextNextPtr = skipWhitespaceOrNewlines(
+    parser.tokens,
+    parser.position + 1
+  );
 
   const nextNextToken = parser.tokens[nextNextPtr];
 
@@ -1546,8 +1624,8 @@ const parseOperand = (
 
       expr = {
         expr,
-        operator: VibeScriptUnaryOp.PostIncrement,
-      } as VibeScriptUnaryOpExpression;
+        operator: VibeScriptUnaryOperator.PostIncrement,
+      } as VibeScriptUnaryOperatorExpression;
 
       continue;
     }
@@ -1557,8 +1635,8 @@ const parseOperand = (
 
       expr = {
         expr,
-        operator: VibeScriptUnaryOp.PostDecrement,
-      } as VibeScriptUnaryOpExpression;
+        operator: VibeScriptUnaryOperator.PostDecrement,
+      } as VibeScriptUnaryOperatorExpression;
 
       continue;
     }
@@ -2038,6 +2116,26 @@ const parseVarDeclStatement = (
 
   ///
 
+  const nextPtr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  const nextToken = parser.tokens[nextPtr];
+
+  if (nextToken === undefined) {
+    return new Error(
+      'unexpected undefined token parsing vibe var decl statement'
+    );
+  }
+
+  if (nextToken.kind !== 'text' || nextToken.value !== 'let') {
+    return new Error(
+      `expected 'let' token starting vibe var decl statement, got '${nextToken.value}'`
+    );
+  }
+
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, nextPtr + 1);
+
+  ///
+
   const varDecl = parseVarDecl(parser);
 
   if (varDecl instanceof Error) {
@@ -2237,6 +2335,12 @@ const parseStatement = (
     return parseVarDeclStatement(parser);
   }
 
+  // step
+
+  if (nextToken.kind === 'text' && nextToken.value === 'step') {
+    return parseStep(parser);
+  }
+
   // file include statement
 
   if (nextToken.kind === 'punc' && nextToken.value === '~') {
@@ -2251,7 +2355,9 @@ const parseStatement = (
 const preceedsStatement = (first: VibeScriptToken): boolean => {
   return (
     (first.kind === 'punc' && first.value === '~') ||
-    (first.kind === 'text' && first.value === 'expect')
+    (first.kind === 'text' && first.value === 'expect') ||
+    (first.kind === 'text' && first.value === 'let') ||
+    (first.kind === 'text' && first.value === 'step')
   );
 };
 
@@ -2624,6 +2730,146 @@ export const parseVibeScript = (
 
 // export type
 
+export type CheckedVibeScriptBooleanExpression = {
+  kind: 'boolean';
+  value: boolean;
+  typeId: number;
+};
+
+export type CheckedVibeScriptNumberExpression = {
+  kind: 'number';
+  value: number;
+  typeId: number;
+};
+
+export type CheckedVibeScriptVarExpression = {
+  kind: 'var';
+  name: string;
+  typeId: number;
+};
+
+export type CheckedVibeScriptCallExpression = {
+  kind: 'call';
+  name: string;
+  args: CheckedVibeScriptExpression[];
+  typeId: number;
+};
+
+export type CheckedVibeScriptUnaryExpression = {
+  kind: 'unary';
+  operator: VibeScriptUnaryOperator;
+  expr: CheckedVibeScriptExpression;
+  typeId: number;
+};
+
+export type CheckedVibeScriptBinaryExpression = {
+  kind: 'binary';
+  operator: VibeScriptBinaryOperator;
+  lhs: CheckedVibeScriptExpression;
+  rhs: CheckedVibeScriptExpression;
+  typeId: number;
+};
+
+export type CheckedVibeScriptUnknownExpression = {
+  kind: 'unknown';
+  expression: VibeScriptExpression;
+  typeId: number;
+};
+
+export type CheckedVibeScriptExpression =
+  | CheckedVibeScriptBooleanExpression
+  | CheckedVibeScriptNumberExpression
+  | CheckedVibeScriptVarExpression
+  | CheckedVibeScriptCallExpression
+  | CheckedVibeScriptUnaryExpression
+  | CheckedVibeScriptBinaryExpression
+  | CheckedVibeScriptUnknownExpression;
+
+export type VibeScriptUnknownTypeInfo = {
+  kind: 'unknown';
+};
+
+export type VibeScriptBuiltinTypeInfo = {
+  kind: 'builtin';
+  name: 'void' | 'boolean' | 'number' | 'string';
+};
+
+export type VibeScriptArrayTypeInfo = {
+  kind: 'array';
+  innerTypeId: number;
+};
+
+export type VibeScriptTupleTypeInfo = {
+  kind: 'tuple';
+  elementTypeIds: number[];
+};
+
+export type VibeScriptObjectTypeFieldInfo = {
+  key: string;
+  typeId: number;
+};
+
+export type VibeScriptObjectTypeInfo = {
+  kind: 'object';
+  fields: VibeScriptObjectTypeFieldInfo[];
+};
+
+export type VibeScriptTypeInfo =
+  | VibeScriptUnknownTypeInfo
+  | VibeScriptBuiltinTypeInfo
+  | VibeScriptArrayTypeInfo
+  | VibeScriptTupleTypeInfo
+  | VibeScriptObjectTypeInfo;
+
+export type VibeScriptVariable = {
+  name: string;
+  typeId: number;
+};
+
+export type VibeScriptScope = {
+  parent: number | null;
+  vars: VibeScriptVariable[];
+};
+
+export type VibeScriptContext = {
+  types: VibeScriptTypeInfo[];
+  scopes: VibeScriptScope[];
+};
+
+export type CheckedVibeScriptPreambleBlock = {
+  kind: 'preamble';
+  typeId: number; // raw expected type id (what the LLM will ideally output)
+  outputTypeId: number; // type id after transforms
+  transforms: VibeScriptTransform[] | null;
+  preamble: VibeScriptPreambleBlock;
+};
+
+export type CheckedVibeScriptStep = {
+  name: string | null;
+  expectsTypeId: number; // raw
+  outputTypeId: number; // transformed
+  expects: VibeScriptType | null;
+  transforms: VibeScriptTransform[] | null;
+  blocks: CheckedVibeScriptTextBlock[];
+};
+
+export type CheckedVibeScriptStepBlock = {
+  kind: 'step';
+  name: string;
+  expectsTypeId: number; // raw expects type id (what the LLM must output)
+  outputTypeId: number; // type id after transforms
+  transforms: VibeScriptTransform[] | null;
+  step: VibeScriptStep;
+};
+
+export type CheckedVibeScriptVarDeclBlock = {
+  kind: 'varDecl';
+  name: string;
+  typeId: number;
+  statement: VibeScriptVarDeclarationStatement;
+  expression: CheckedVibeScriptExpression;
+};
+
 export type CheckedVibeScriptFileIncludeBlock = {
   kind: 'file-include';
   parent: string;
@@ -2636,8 +2882,9 @@ export type CheckedVibeScriptRegularCommentBlock = {
   block: VibeScriptRegularCommentBlock;
 };
 
-export type CheckedVibeScriptTextPart = { kind: 'quasis'; value: string };
-// | { kind: 'expr'; expr: CheckedVibeScriptExpression; }
+export type CheckedVibeScriptTextPart =
+  | { kind: 'quasis'; value: string }
+  | { kind: 'expr'; expr: CheckedVibeScriptExpression };
 
 export type CheckedVibeScriptTextBlock = {
   kind: 'text';
@@ -2646,18 +2893,1145 @@ export type CheckedVibeScriptTextBlock = {
 };
 
 export type CheckedVibeScriptBlock =
+  | CheckedVibeScriptPreambleBlock
+  | CheckedVibeScriptStepBlock
+  | CheckedVibeScriptVarDeclBlock
   | CheckedVibeScriptFileIncludeBlock
-  | CheckedVibeScriptRegularCommentBlock
-  | CheckedVibeScriptTextBlock;
+  | CheckedVibeScriptTextBlock
+  | CheckedVibeScriptRegularCommentBlock;
 
 export type CheckedVibeScript = {
   blocks: CheckedVibeScriptBlock[];
+  steps: CheckedVibeScriptStep[];
+  expectsTypeId: number | null; // raw (null when using steps)
+  expectsOutputTypeId: number | null; // transformed (null when using steps)
+  expectsTransforms: VibeScriptTransform[] | null; // null when using steps / none
+  context: VibeScriptContext;
+};
+
+const createContext = (): VibeScriptContext => {
+  const types: VibeScriptTypeInfo[] = [];
+
+  // Keep these ids stable by pushing in a fixed order.
+  //
+  // 0: unknown
+  // 1: void
+  // 2: boolean
+  // 3: number
+  // 4: string
+
+  types.push({ kind: 'unknown' });
+  types.push({ kind: 'builtin', name: 'void' });
+  types.push({ kind: 'builtin', name: 'boolean' });
+  types.push({ kind: 'builtin', name: 'number' });
+  types.push({ kind: 'builtin', name: 'string' });
+
+  const scopes: VibeScriptScope[] = [
+    {
+      parent: null,
+      vars: [],
+    },
+  ];
+
+  return {
+    types,
+    scopes,
+  };
+};
+
+const UnknownTypeId = 0;
+const VoidTypeId = 1;
+const BooleanTypeId = 2;
+const NumberTypeId = 3;
+const StringTypeId = 4;
+
+const typeInfoEq = (l: VibeScriptTypeInfo, r: VibeScriptTypeInfo) => {
+  if (l.kind !== r.kind) {
+    return false;
+  }
+
+  switch (l.kind) {
+    case 'unknown': {
+      return true;
+    }
+
+    case 'builtin': {
+      return l.name === (r as VibeScriptBuiltinTypeInfo).name;
+    }
+
+    case 'array': {
+      return l.innerTypeId === (r as VibeScriptArrayTypeInfo).innerTypeId;
+    }
+
+    case 'tuple': {
+      const rr = r as VibeScriptTupleTypeInfo;
+      if (l.elementTypeIds.length !== rr.elementTypeIds.length) {
+        return false;
+      }
+
+      for (let i = 0; i < l.elementTypeIds.length; i++) {
+        if (l.elementTypeIds[i] !== rr.elementTypeIds[i]) {
+          return false;
+        }
+      }
+
+      return true;
+    }
+
+    case 'object': {
+      const rr = r as VibeScriptObjectTypeInfo;
+
+      if (l.fields.length !== rr.fields.length) {
+        return false;
+      }
+
+      for (let i = 0; i < l.fields.length; i++) {
+        const lf = l.fields[i];
+        const rf = rr.fields[i];
+
+        if (!lf || !rf) {
+          return false;
+        }
+
+        if (lf.key !== rf.key) {
+          return false;
+        }
+
+        if (lf.typeId !== rf.typeId) {
+          return false;
+        }
+      }
+
+      return true;
+    }
+
+    default: {
+      return false;
+    }
+  }
+};
+
+const findOrAddTypeId = (
+  context: VibeScriptContext,
+  typeInfo: VibeScriptTypeInfo
+): number => {
+  for (let i = 0; i < context.types.length; i++) {
+    const t = context.types[i];
+
+    if (!t) {
+      continue;
+    }
+
+    if (typeInfoEq(t, typeInfo)) {
+      return i;
+    }
+  }
+
+  context.types.push(typeInfo);
+
+  return context.types.length - 1;
+};
+
+export const typeNameForTypeId = (
+  context: VibeScriptContext,
+  typeId: number
+): string => {
+  const t = context.types[typeId];
+
+  if (!t) {
+    return 'unknown';
+  }
+
+  switch (t.kind) {
+    case 'unknown': {
+      return 'unknown';
+    }
+
+    case 'builtin': {
+      return t.name;
+    }
+
+    case 'array': {
+      return `${typeNameForTypeId(context, t.innerTypeId)}[]`;
+    }
+
+    case 'tuple': {
+      return `[${t.elementTypeIds.map(id => typeNameForTypeId(context, id)).join(', ')}]`;
+    }
+
+    case 'object': {
+      const inner = t.fields
+        .map(f => `${f.key}: ${typeNameForTypeId(context, f.typeId)}`)
+        .join(', ');
+
+      return `{ ${inner} }`;
+    }
+
+    default: {
+      return 'unknown';
+    }
+  }
+};
+
+const typeCheckTransformsForTypeId = (
+  context: VibeScriptContext,
+  rawTypeId: number,
+  transforms: VibeScriptTransform[] | null
+): number | Error => {
+  // let error: Error | null = null;
+
+  let currentTypeId = rawTypeId;
+
+  for (const tr of transforms ?? []) {
+    if (tr.kind === 'takeLast') {
+      const t = context.types[currentTypeId];
+
+      if (!t) {
+        return new Error('unknown type id');
+      }
+
+      if (t.kind !== 'array') {
+        return new Error(
+          `takeLast can only be used on arrays, got '${typeNameForTypeId(context, currentTypeId)}'`
+        );
+      }
+
+      if (tr.count !== null) {
+        if (!Number.isInteger(tr.count) || tr.count < 0) {
+          return new Error(
+            `takeLast(N) requires integer N >= 0, got '${tr.count}'`
+          );
+        }
+
+        // takeLast(N) returns an array (same type)
+        currentTypeId = rawTypeId;
+
+        continue;
+      }
+
+      // takeLast (no args) returns the element type
+      currentTypeId = t.innerTypeId;
+
+      continue;
+    }
+
+    if (tr.kind === 'maxBy') {
+      const t = context.types[currentTypeId];
+
+      if (!t) {
+        return new Error('unknown type id');
+      }
+
+      if (t.kind !== 'array') {
+        return new Error(
+          `maxBy can only be used on arrays, got '${typeNameForTypeId(context, currentTypeId)}'`
+        );
+      }
+
+      if (typeof tr.key !== 'string' || tr.key.length === 0) {
+        return new Error('maxBy(key) requires a non-empty key');
+      }
+      const inner = context.types[t.innerTypeId];
+
+      if (inner && inner.kind === 'object') {
+        const field = inner.fields.find(f => f.key === tr.key);
+
+        if (!field) {
+          return new Error(
+            `maxBy(${tr.key}) key not found on element type '${typeNameForTypeId(context, t.innerTypeId)}'`
+          );
+        }
+        const ft = context.types[field.typeId];
+
+        if (
+          field.typeId !== UnknownTypeId &&
+          field.typeId !== NumberTypeId &&
+          !(ft && ft.kind === 'builtin' && ft.name === 'number')
+        ) {
+          return new Error(
+            `maxBy(${tr.key}) requires numeric field, got '${typeNameForTypeId(context, field.typeId)}'`
+          );
+        }
+      }
+
+      // maxBy(...) returns the element type
+      currentTypeId = t.innerTypeId;
+
+      continue;
+    }
+
+    return new Error('unknown transform');
+  }
+
+  return currentTypeId;
+};
+
+const addVarToScope = (
+  context: VibeScriptContext,
+  scopeId: number,
+  variable: VibeScriptVariable
+): Error | null => {
+  const scope = context.scopes[scopeId];
+
+  if (!scope) {
+    return new Error('internal error: scope not found');
+  }
+
+  for (const v of scope.vars) {
+    if (v.name === variable.name) {
+      return new Error(`redefinition of variable '${variable.name}'`);
+    }
+  }
+
+  scope.vars.push(variable);
+
+  return null;
+};
+
+const findVarInScope = (
+  context: VibeScriptContext,
+  scopeId: number,
+  name: string
+): VibeScriptVariable | null => {
+  let currentId: number | null = scopeId;
+
+  while (currentId !== null) {
+    const scope: VibeScriptScope | undefined = context.scopes[currentId];
+    if (!scope) {
+      return null;
+    }
+
+    for (const v of scope.vars) {
+      if (v.name === name) {
+        return v;
+      }
+    }
+
+    currentId = scope.parent;
+  }
+
+  return null;
+};
+
+const checkTypesForCompat = (
+  context: VibeScriptContext,
+  expectedTypeId: number,
+  foundTypeId: number
+): Error | null => {
+  if (expectedTypeId === UnknownTypeId || foundTypeId === UnknownTypeId) {
+    return null;
+  }
+
+  if (expectedTypeId === foundTypeId) {
+    return null;
+  }
+
+  const expected = context.types[expectedTypeId];
+  const found = context.types[foundTypeId];
+
+  if (!expected || !found) {
+    return new Error('unknown type id');
+  }
+
+  if (expected.kind === 'array' && found.kind === 'array') {
+    return checkTypesForCompat(
+      context,
+      expected.innerTypeId,
+      found.innerTypeId
+    );
+  }
+
+  return new Error(
+    `type mismatch: expected '${typeNameForTypeId(context, expectedTypeId)}', got '${typeNameForTypeId(context, foundTypeId)}'`
+  );
+};
+
+const unifyWithType = (
+  context: VibeScriptContext,
+  foundTypeId: number,
+  typeHint: number | null
+): number | Error => {
+  if (typeHint === null) {
+    return foundTypeId;
+  }
+
+  if (typeHint === UnknownTypeId) {
+    return foundTypeId;
+  }
+
+  const err = checkTypesForCompat(context, typeHint, foundTypeId);
+
+  if (err) {
+    return err;
+  }
+
+  return typeHint;
+};
+
+/// type checkers
+
+const typeCheckType = (
+  uncheckedType: VibeScriptType,
+  context: VibeScriptContext
+): number | Error => {
+  // For now: be permissive so parsing experiments don't hard-fail.
+  // Unknown/unhandled nodes become UnknownTypeId without error.
+
+  if (!uncheckedType || typeof uncheckedType !== 'object') {
+    return UnknownTypeId;
+  }
+
+  // name
+  if ('name' in uncheckedType) {
+    const nameRaw = uncheckedType.name;
+
+    if (typeof nameRaw !== 'string' || nameRaw.length === 0) {
+      return UnknownTypeId;
+    }
+
+    const name = nameRaw.toLowerCase();
+
+    switch (name) {
+      case 'void':
+        return VoidTypeId;
+
+      case 'bool':
+      case 'boolean':
+        return BooleanTypeId;
+      case 'number':
+        return NumberTypeId;
+
+      case 'string':
+        return StringTypeId;
+
+      default:
+        return UnknownTypeId;
+    }
+  }
+
+  // array
+  if ('arrayOf' in uncheckedType) {
+    const innerTypeId = (() => {
+      const inner = uncheckedType.arrayOf;
+
+      if (!inner) {
+        return UnknownTypeId;
+      }
+
+      return typeCheckType(inner, context);
+    })();
+
+    if (innerTypeId instanceof Error) {
+      return innerTypeId;
+    }
+
+    const typeId = findOrAddTypeId(context, {
+      kind: 'array',
+      innerTypeId,
+    });
+
+    return typeId;
+  }
+
+  // tuple
+  if ('tuple' in uncheckedType) {
+    const elemsUnchecked = uncheckedType.tuple;
+
+    if (!Array.isArray(elemsUnchecked)) {
+      return UnknownTypeId;
+    }
+
+    const elementTypeIds: number[] = [];
+
+    for (const e of elemsUnchecked) {
+      const id = typeCheckType(e, context);
+
+      if (id instanceof Error) {
+        return id;
+      }
+
+      elementTypeIds.push(id);
+    }
+
+    const typeId = findOrAddTypeId(context, {
+      kind: 'tuple',
+      elementTypeIds,
+    });
+
+    return typeId;
+  }
+
+  // object
+  if ('object' in uncheckedType) {
+    const fieldsUnchecked = uncheckedType.object;
+
+    if (!Array.isArray(fieldsUnchecked)) {
+      return UnknownTypeId;
+    }
+
+    const fields: VibeScriptObjectTypeFieldInfo[] = [];
+
+    for (const f of fieldsUnchecked) {
+      if (!f || typeof f !== 'object') {
+        continue;
+      }
+
+      const key = (f as VibeScriptObjectField).key;
+
+      if (typeof key !== 'string' || key.length === 0) {
+        continue;
+      }
+
+      const typeId = typeCheckType((f as VibeScriptObjectField).type, context);
+
+      if (typeId instanceof Error) {
+        return typeId;
+      }
+
+      fields.push({
+        key,
+        typeId,
+      });
+    }
+
+    const id = findOrAddTypeId(context, {
+      kind: 'object',
+      fields,
+    });
+
+    return id;
+  }
+
+  return UnknownTypeId;
+};
+
+const typeCheckCall = (
+  name: string,
+  args: VibeScriptExpression[],
+  scopeId: number,
+  context: VibeScriptContext,
+  typeHint: number | null
+): CheckedVibeScriptExpression | Error => {
+  const checkedArgs: CheckedVibeScriptExpression[] = [];
+
+  for (const arg of args) {
+    const checkedArg = typeCheckExpression(arg, scopeId, context, null);
+
+    if (checkedArg instanceof Error) {
+      return checkedArg;
+    }
+
+    checkedArgs.push(checkedArg);
+  }
+
+  // Minimal builtins so your sample works.
+  //
+  // - random() -> number
+  // - floor(number) -> number
+  // - ceil(number) -> number
+
+  let returnTypeId = UnknownTypeId;
+
+  switch (name) {
+    case 'random': {
+      if (checkedArgs.length !== 0) {
+        return new Error('random() takes 0 arguments');
+      }
+
+      returnTypeId = NumberTypeId;
+
+      break;
+    }
+
+    case 'floor': {
+      if (checkedArgs.length !== 1) {
+        return new Error('floor(...) takes 1 argument');
+      }
+      const arg0 = checkedArgs[0];
+
+      if (
+        arg0 &&
+        arg0.typeId !== UnknownTypeId &&
+        arg0.typeId !== NumberTypeId
+      ) {
+        return new Error(
+          `floor(...) expects number, got '${typeNameForTypeId(context, arg0.typeId)}'`
+        );
+      }
+
+      returnTypeId = NumberTypeId;
+
+      break;
+    }
+
+    case 'ceil': {
+      if (checkedArgs.length !== 1) {
+        return new Error('ceil(...) takes 1 argument');
+      }
+      const arg0 = checkedArgs[0];
+
+      if (
+        arg0 &&
+        arg0.typeId !== UnknownTypeId &&
+        arg0.typeId !== NumberTypeId
+      ) {
+        return new Error(
+          `ceil(...) expects number, got '${typeNameForTypeId(context, arg0.typeId)}'`
+        );
+      }
+
+      returnTypeId = NumberTypeId;
+
+      break;
+    }
+
+    case 'round': {
+      if (checkedArgs.length !== 1) {
+        return new Error('round(...) takes 1 argument');
+      }
+      const arg0 = checkedArgs[0];
+
+      if (
+        arg0 &&
+        arg0.typeId !== UnknownTypeId &&
+        arg0.typeId !== NumberTypeId
+      ) {
+        return new Error(
+          `round(...) expects number, got '${typeNameForTypeId(context, arg0.typeId)}'`
+        );
+      }
+
+      returnTypeId = NumberTypeId;
+
+      break;
+    }
+
+    default: {
+      // Unknown function -> unknown type (but still return a checked node so we can keep going).
+      returnTypeId = UnknownTypeId;
+
+      break;
+    }
+  }
+
+  const unifiedTypeId = unifyWithType(context, returnTypeId, typeHint);
+
+  if (unifiedTypeId instanceof Error) {
+    return unifiedTypeId;
+  }
+
+  return {
+    kind: 'call',
+    name,
+    args: checkedArgs,
+    typeId: unifiedTypeId,
+  };
+};
+
+const typeCheckUnary = (
+  operator: VibeScriptUnaryOperator,
+  expr: VibeScriptExpression,
+  scopeId: number,
+  context: VibeScriptContext,
+  typeHint: number | null
+): CheckedVibeScriptExpression | Error => {
+  const checkedExpr = typeCheckExpression(expr, scopeId, context, null);
+
+  if (checkedExpr instanceof Error) {
+    return checkedExpr;
+  }
+
+  // For now: ++ / -- require number (or unknown), produce number (or unknown).
+  if (
+    checkedExpr.typeId !== UnknownTypeId &&
+    checkedExpr.typeId !== NumberTypeId
+  ) {
+    return new Error(
+      `unary ${operator} expects number, got '${typeNameForTypeId(context, checkedExpr.typeId)}'`
+    );
+  }
+
+  const unifiedTypeId = unifyWithType(context, NumberTypeId, typeHint);
+
+  if (unifiedTypeId instanceof Error) {
+    return unifiedTypeId;
+  }
+
+  return {
+    kind: 'unary',
+    operator,
+    expr: checkedExpr,
+    typeId: unifiedTypeId,
+  };
+};
+
+const typeCheckBinary = (
+  operator: VibeScriptBinaryOperator,
+  lhs: VibeScriptExpression,
+  rhs: VibeScriptExpression,
+  scopeId: number,
+  context: VibeScriptContext,
+  typeHint: number | null
+): CheckedVibeScriptExpression | Error => {
+  const checkedLhs = typeCheckExpression(lhs, scopeId, context, null);
+
+  if (checkedLhs instanceof Error) {
+    return checkedLhs;
+  }
+
+  // If this is assignment, prefer checking RHS with LHS type as a hint.
+  const rhsHint =
+    operator === 'Assign' && checkedLhs.typeId !== UnknownTypeId
+      ? checkedLhs.typeId
+      : null;
+
+  const checkedRhs = typeCheckExpression(rhs, scopeId, context, rhsHint);
+
+  if (checkedRhs instanceof Error) {
+    return checkedRhs;
+  }
+
+  let resultTypeId = UnknownTypeId;
+
+  switch (operator) {
+    case 'Add':
+    case 'Subtract':
+    case 'Multiply':
+    case 'Divide':
+    case 'Modulo': {
+      // For now: numeric only.
+      if (
+        checkedLhs.typeId !== UnknownTypeId &&
+        checkedLhs.typeId !== NumberTypeId
+      ) {
+        return new Error(
+          `left side of arithmetic must be number, got '${typeNameForTypeId(context, checkedLhs.typeId)}'`
+        );
+      }
+
+      if (
+        checkedRhs.typeId !== UnknownTypeId &&
+        checkedRhs.typeId !== NumberTypeId
+      ) {
+        return new Error(
+          `right side of arithmetic must be number, got '${typeNameForTypeId(context, checkedRhs.typeId)}'`
+        );
+      }
+
+      resultTypeId = NumberTypeId;
+
+      break;
+    }
+
+    case 'LogicalAnd':
+    case 'LogicalOr': {
+      if (
+        checkedLhs.typeId !== UnknownTypeId &&
+        checkedLhs.typeId !== BooleanTypeId
+      ) {
+        return new Error(
+          `left side of logical op must be boolean, got '${typeNameForTypeId(context, checkedLhs.typeId)}'`
+        );
+      }
+
+      if (
+        checkedRhs.typeId !== UnknownTypeId &&
+        checkedRhs.typeId !== BooleanTypeId
+      ) {
+        return new Error(
+          `right side of logical op must be boolean, got '${typeNameForTypeId(context, checkedRhs.typeId)}'`
+        );
+      }
+
+      resultTypeId = BooleanTypeId;
+
+      break;
+    }
+
+    case 'Equal':
+    case 'NotEqual':
+    case 'LessThan':
+    case 'LessThanOrEqual':
+    case 'GreaterThan':
+    case 'GreaterThanOrEqual': {
+      // For now: require type equality unless unknown.
+      if (
+        checkedLhs.typeId !== UnknownTypeId &&
+        checkedRhs.typeId !== UnknownTypeId &&
+        checkedLhs.typeId !== checkedRhs.typeId
+      ) {
+        return new Error(
+          `comparison between incompatible types ('${typeNameForTypeId(context, checkedLhs.typeId)}' and '${typeNameForTypeId(context, checkedRhs.typeId)}')`
+        );
+      }
+
+      resultTypeId = BooleanTypeId;
+
+      break;
+    }
+
+    case 'Assign': {
+      // Only allow assigning to a variable for now.
+      if (checkedLhs.kind !== 'var') {
+        return new Error('left-hand side of assignment must be a variable');
+      }
+      const existing = findVarInScope(context, scopeId, checkedLhs.name);
+
+      if (!existing) {
+        return new Error(`assignment to unknown variable '${checkedLhs.name}'`);
+      }
+      const compat = checkTypesForCompat(
+        context,
+        existing.typeId,
+        checkedRhs.typeId
+      );
+
+      if (compat instanceof Error) {
+        return compat;
+      }
+
+      // If variable was unknown, let assignment “lock it in” to RHS type.
+      if (
+        existing.typeId === UnknownTypeId &&
+        checkedRhs.typeId !== UnknownTypeId
+      ) {
+        existing.typeId = checkedRhs.typeId;
+      }
+
+      resultTypeId = existing.typeId;
+
+      break;
+    }
+
+    default: {
+      resultTypeId = UnknownTypeId;
+
+      break;
+    }
+  }
+
+  const unifiedTypeId = unifyWithType(context, resultTypeId, typeHint);
+
+  if (unifiedTypeId instanceof Error) {
+    return unifiedTypeId;
+  }
+
+  return {
+    kind: 'binary',
+    operator,
+    lhs: checkedLhs,
+    rhs: checkedRhs,
+    typeId: unifiedTypeId,
+  };
+};
+
+const typeCheckExpression = (
+  expr: VibeScriptExpression,
+  scopeId: number,
+  context: VibeScriptContext,
+  typeHint: number | null
+): CheckedVibeScriptExpression | Error => {
+  // boolean literal
+
+  if ('value' in expr && typeof expr.value === 'boolean') {
+    const unifiedTypeId = unifyWithType(context, BooleanTypeId, typeHint);
+
+    if (unifiedTypeId instanceof Error) {
+      return unifiedTypeId;
+    }
+
+    return {
+      kind: 'boolean',
+      value: expr.value,
+      typeId: unifiedTypeId,
+    };
+  }
+
+  // number literal
+
+  if ('value' in expr && typeof expr.value === 'number') {
+    const unifiedTypeId = unifyWithType(context, NumberTypeId, typeHint);
+
+    if (unifiedTypeId instanceof Error) {
+      return unifiedTypeId;
+    }
+
+    return {
+      kind: 'number',
+      value: expr.value,
+      typeId: unifiedTypeId,
+    };
+  }
+
+  // variable
+
+  if ('varName' in expr) {
+    const name = expr.varName;
+
+    if (typeof name !== 'string' || name.length === 0) {
+      return new Error('invalid variable name');
+    }
+
+    const v = findVarInScope(context, scopeId, name);
+
+    if (!v) {
+      const unifiedTypeId = unifyWithType(context, UnknownTypeId, typeHint);
+
+      if (unifiedTypeId instanceof Error) {
+        return unifiedTypeId;
+      }
+
+      return new Error(`variable '${name}' not found`);
+    }
+
+    const unifiedTypeId = unifyWithType(context, v.typeId, typeHint);
+
+    if (unifiedTypeId instanceof Error) {
+      return unifiedTypeId;
+    }
+
+    return {
+      kind: 'var',
+      name,
+      typeId: unifiedTypeId,
+    };
+  }
+
+  // call
+
+  if ('call' in expr) {
+    const call = expr.call;
+
+    if (!call || typeof call !== 'object') {
+      return new Error('invalid call expression');
+    }
+
+    return typeCheckCall(call.name, call.args, scopeId, context, typeHint);
+  }
+
+  // unary op
+
+  if ('expr' in expr && 'operator' in expr && !('lhs' in expr)) {
+    return typeCheckUnary(
+      expr.operator as VibeScriptUnaryOperator,
+      expr.expr,
+      scopeId,
+      context,
+      typeHint
+    );
+  }
+
+  // binary op
+
+  if ('lhs' in expr && 'rhs' in expr && 'operator' in expr) {
+    return typeCheckBinary(
+      expr.operator as VibeScriptBinaryOperator,
+      expr.lhs as VibeScriptExpression,
+      expr.rhs as VibeScriptExpression,
+      scopeId,
+      context,
+      typeHint
+    );
+  }
+
+  // operator-expression fallback (these can appear as parser error-tolerance nodes)
+  if ('operator' in expr && !('lhs' in expr) && !('rhs' in expr)) {
+    const unifiedTypeId = unifyWithType(context, UnknownTypeId, typeHint);
+
+    if (unifiedTypeId instanceof Error) {
+      return unifiedTypeId;
+    }
+
+    return new Error('unexpected operator in expression position');
+  }
+
+  return new Error('unknown expression kind');
 };
 
 // currently only parent: '~/...' works
 const typeCheckStatement = (
-  stmt: VibeScriptStatement
+  stmt: VibeScriptStatement,
+  scopeId: number,
+  context: VibeScriptContext
 ): CheckedVibeScriptBlock | Error => {
+  // step
+  //
+  // IMPORTANT:
+  // VibeScriptStep also has an optional `expects` field, so we must
+  // classify step statements before the top-level `expects` statement
+  // check (or explicitly exclude `step` from that check).
+
+  if ('step' in stmt) {
+    const name = stmt.step;
+
+    if (typeof name !== 'string' || name.length === 0) {
+      return new Error('step name cannot be empty');
+    }
+
+    const inputName = stmt.inputName ?? null;
+
+    let inferredExpectsTypeId: number | null = null;
+
+    if (inputName !== null) {
+      const v = findVarInScope(context, scopeId, inputName);
+
+      if (!v) {
+        return new Error(`step input variable '${inputName}' not found`);
+      }
+      inferredExpectsTypeId = v.typeId;
+    }
+
+    let expectsTypeId = StringTypeId;
+
+    if (stmt.expects) {
+      const typeId = typeCheckType(stmt.expects, context);
+
+      if (typeId instanceof Error) {
+        return typeId;
+      }
+
+      expectsTypeId = typeId;
+
+      if (inferredExpectsTypeId !== null) {
+        const compatErr = checkTypesForCompat(
+          context,
+          expectsTypeId,
+          inferredExpectsTypeId
+        );
+
+        if (compatErr) {
+          return compatErr;
+        }
+      }
+    } else if (inferredExpectsTypeId !== null) {
+      expectsTypeId = inferredExpectsTypeId;
+    }
+
+    const transforms = stmt.transforms ?? null;
+
+    const outputTypeId = typeCheckTransformsForTypeId(
+      context,
+      expectsTypeId,
+      transforms
+    );
+
+    if (outputTypeId instanceof Error) {
+      return outputTypeId;
+    }
+
+    return {
+      kind: 'step',
+      name,
+      expectsTypeId,
+      outputTypeId,
+      transforms,
+      step: stmt,
+    };
+  }
+
+  // preamble
+  //
+  // NOTE:
+  // This must not catch step statements, hence the `'step' in stmt` early return above.
+
+  if ('expects' in stmt && !('step' in stmt)) {
+    const expects = stmt.expects as VibeScriptType;
+
+    const typeId = typeCheckType(expects, context);
+
+    if (typeId instanceof Error) {
+      return typeId;
+    }
+
+    const transforms = (stmt as VibeScriptPreambleBlock).transforms ?? null;
+
+    const outputTypeId = typeCheckTransformsForTypeId(
+      context,
+      typeId,
+      transforms
+    );
+
+    if (outputTypeId instanceof Error) {
+      return outputTypeId;
+    }
+
+    return {
+      kind: 'preamble',
+      typeId,
+      outputTypeId,
+      transforms,
+      preamble: {
+        expects,
+        transforms,
+      },
+    };
+  }
+
+  // var decl statement (let)
+
+  if ('varDecl' in stmt && 'expr' in stmt) {
+    const declaredType = stmt.varDecl.type;
+
+    let declaredTypeId = UnknownTypeId;
+
+    if (declaredType) {
+      const typeId = typeCheckType(declaredType, context);
+
+      if (typeId instanceof Error) {
+        return typeId;
+      }
+
+      declaredTypeId = typeId;
+    }
+
+    const checkedExpr = typeCheckExpression(
+      stmt.expr,
+      scopeId,
+      context,
+      declaredType ? declaredTypeId : null
+    );
+
+    if (checkedExpr instanceof Error) {
+      return checkedExpr;
+    }
+
+    const finalTypeId = checkedExpr.typeId;
+
+    if (declaredType) {
+      const compatErr = checkTypesForCompat(
+        context,
+        declaredTypeId,
+        checkedExpr.typeId
+      );
+
+      if (compatErr instanceof Error) {
+        return compatErr;
+      }
+    }
+
+    const name = stmt.varDecl.name;
+
+    if (typeof name !== 'string' || name.length === 0) {
+      return new Error('variable name cannot be empty');
+    }
+    const addErr = addVarToScope(context, scopeId, {
+      name,
+      typeId: finalTypeId,
+    });
+
+    if (addErr instanceof Error) {
+      return addErr;
+    }
+
+    return {
+      kind: 'varDecl',
+      name: stmt.varDecl.name,
+      typeId: finalTypeId,
+      statement: stmt,
+      expression: checkedExpr,
+    };
+  }
+
   if ('parent' in stmt && 'files' in stmt) {
     const parent = stmt.parent;
 
@@ -2711,11 +4085,13 @@ const typeCheckStatement = (
     };
   }
 
-  return new Error('unknown vibe script statement while type checking');
+  return new Error('unknown vibe script statement kind while type checking');
 };
 
 const typeCheckTextBlock = (
-  block: VibeScriptTextBlock
+  block: VibeScriptTextBlock,
+  scopeId: number,
+  context: VibeScriptContext
 ): CheckedVibeScriptTextBlock | Error => {
   const parts: CheckedVibeScriptTextPart[] = [];
 
@@ -2734,7 +4110,29 @@ const typeCheckTextBlock = (
     }
 
     if ('expr' in part) {
-      return new Error('not implemented: typeCheckTextBlock expr part');
+      const checkedExpr = typeCheckExpression(
+        part.expr,
+        scopeId,
+        context,
+        null
+      );
+
+      if (checkedExpr instanceof Error) {
+        return checkedExpr;
+      }
+
+      // Interpolations should generally be scalar-ish.
+      // For now: allow unknown/boolean/number/string, but reject void explicitly.
+      if (checkedExpr.typeId === VoidTypeId) {
+        return new Error('cannot interpolate a void expression');
+      }
+
+      parts.push({
+        kind: 'expr',
+        expr: checkedExpr,
+      });
+
+      continue;
     }
 
     return new Error('unknown vibe script text literal part');
@@ -2750,17 +4148,83 @@ const typeCheckTextBlock = (
 export const typeCheckVibeScript = (
   blocks: VibeScriptBlock[]
 ): CheckedVibeScript | Error => {
+  const context = createContext();
+
+  const rootScopeId = 0;
+
+  let expectsTypeId: number | null = null;
+
+  let expectsOutputTypeId: number | null = null;
+
+  let expectsTransforms: VibeScriptTransform[] | null = null;
+
   const checkedBlocks: CheckedVibeScriptBlock[] = [];
+
+  let pendingStepOutput: { name: string; typeId: number } | null = null;
+
+  const commitPendingStepOutput = (): Error | null => {
+    if (!pendingStepOutput) {
+      return null;
+    }
+
+    const addErr = addVarToScope(context, rootScopeId, {
+      name: pendingStepOutput.name,
+      typeId: pendingStepOutput.typeId,
+    });
+
+    if (addErr instanceof Error) {
+      return addErr;
+    }
+
+    pendingStepOutput = null;
+
+    return null;
+  };
 
   for (const block of blocks) {
     // statement comment block
     if (block && typeof block === 'object' && 'statement' in block) {
       const stmt = block.statement;
 
-      const checkedStmt = typeCheckStatement(stmt);
+      // If we are encountering a new step statement, the previous step has “completed”
+      // from the point of view of later prompts, so its named output becomes available now.
+      if (stmt && typeof stmt === 'object' && 'step' in stmt) {
+        const commitErr = commitPendingStepOutput();
+
+        if (commitErr instanceof Error) {
+          return commitErr;
+        }
+      }
+
+      const checkedStmt = typeCheckStatement(stmt, rootScopeId, context);
 
       if (checkedStmt instanceof Error) {
         return checkedStmt;
+      }
+
+      if (checkedStmt.kind === 'preamble') {
+        if (expectsTypeId !== null) {
+          return new Error(
+            'only a single preamble (eg `expects: string[]`) allowed in vibe script'
+          );
+        }
+
+        expectsTypeId = checkedStmt.typeId;
+        expectsOutputTypeId = checkedStmt.outputTypeId;
+        expectsTransforms = checkedStmt.transforms ?? null;
+      }
+
+      if (checkedStmt.kind === 'step') {
+        const outputName = checkedStmt.step.outputName ?? null;
+
+        if (outputName !== null) {
+          pendingStepOutput = {
+            name: outputName,
+            typeId: checkedStmt.outputTypeId,
+          };
+        } else {
+          pendingStepOutput = null;
+        }
       }
 
       checkedBlocks.push(checkedStmt);
@@ -2782,7 +4246,7 @@ export const typeCheckVibeScript = (
     // text block
 
     if (block && typeof block === 'object' && 'parts' in block) {
-      const checkedText = typeCheckTextBlock(block);
+      const checkedText = typeCheckTextBlock(block, rootScopeId, context);
 
       if (checkedText instanceof Error) {
         return checkedText;
@@ -2796,7 +4260,94 @@ export const typeCheckVibeScript = (
     return new Error('unknown vibe script block kind while type checking');
   }
 
+  const commitErr = commitPendingStepOutput();
+
+  if (commitErr instanceof Error) {
+    return commitErr;
+  }
+
+  const usesSteps = checkedBlocks.some(b => b.kind === 'step');
+
+  // If we are using steps, we do not allow a top-level expects.
+  if (usesSteps && expectsTypeId !== null) {
+    return new Error('top-level expects block is not allowed when using steps');
+  }
+
+  // If no expects was provided (single-step script), default to string.
+  const resolvedExpectsTypeId = usesSteps
+    ? null
+    : (expectsTypeId ?? StringTypeId);
+
+  const resolvedExpectsOutputTypeId = usesSteps
+    ? null
+    : (expectsOutputTypeId ?? resolvedExpectsTypeId);
+
+  const resolvedExpectsTransforms = usesSteps ? null : expectsTransforms;
+
+  ///
+
+  const steps: CheckedVibeScriptStep[] = [];
+
+  let current: CheckedVibeScriptStep | null = null;
+
+  const pushCurrent = () => {
+    if (current) {
+      steps.push(current);
+
+      current = null;
+    }
+  };
+
+  const implicitStepExpectsTypeId = usesSteps
+    ? StringTypeId
+    : (resolvedExpectsTypeId ?? StringTypeId);
+
+  const implicitStepOutputTypeId = usesSteps
+    ? StringTypeId
+    : (resolvedExpectsOutputTypeId ?? implicitStepExpectsTypeId);
+
+  const implicitStepTransforms = usesSteps ? null : resolvedExpectsTransforms;
+
+  for (const b of checkedBlocks) {
+    if (b.kind === 'step') {
+      pushCurrent();
+
+      current = {
+        name: b.name,
+        expectsTypeId: b.expectsTypeId,
+        outputTypeId: b.outputTypeId,
+        expects: b.step.expects ?? null,
+        transforms: b.transforms ?? null,
+        blocks: [],
+      };
+
+      continue;
+    }
+
+    if (b.kind === 'text') {
+      if (!current) {
+        current = {
+          name: null,
+          expectsTypeId: implicitStepExpectsTypeId,
+          outputTypeId: implicitStepOutputTypeId,
+          expects: null,
+          transforms: implicitStepTransforms,
+          blocks: [],
+        };
+      }
+
+      current.blocks.push(b);
+    }
+  }
+
+  pushCurrent();
+
   return {
     blocks: checkedBlocks,
+    steps,
+    expectsTypeId: resolvedExpectsTypeId,
+    expectsOutputTypeId: resolvedExpectsOutputTypeId,
+    expectsTransforms: resolvedExpectsTransforms,
+    context,
   };
 };

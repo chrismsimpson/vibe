@@ -29,7 +29,8 @@ import * as fs from 'node:fs/promises';
 import * as vibe from './vibe';
 
 async function main() {
-  const promptName = 'test01';
+  // const promptName = 'test01';
+  const promptName = 'test02';
   // const promptName = 'untitled';
 
   const promptsDir = path.join(process.cwd(), 'prompts');
@@ -46,17 +47,17 @@ async function main() {
     process.exit(1);
   }
 
-  console.dir(parsed, { depth: null });
+  // console.dir(parsed, { depth: null });
 
-  // const checked = vibe.typeCheckVibeScript(parsed);
+  const checked = vibe.typeCheckVibeScript(parsed);
 
-  // if (checked instanceof Error) {
-  //   console.error(checked);
+  if (checked instanceof Error) {
+    console.error(checked);
 
-  //   process.exit(1);
-  // }
+    process.exit(1);
+  }
 
-  // console.dir(checked, { depth: null });
+  console.dir(checked, { depth: null });
 }
 
 main().catch(err => {
