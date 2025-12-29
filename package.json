@@ -5,6 +5,8 @@
   "scripts": {
     "start": "ts-node src/index.ts",
     "vibe": "ts-node src/run.ts",
+    "parse": "ts-node src/parse.ts",
+    "type-check": "ts-node src/type-check.ts",
     "archive": "ts-node src/archive.ts",
     "build": "tsc"
   },

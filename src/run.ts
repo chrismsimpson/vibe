@@ -5,82 +5,25 @@ import * as path from 'node:path';
 import { exec, markdownify } from './vibe-machine';
 import { completeChat } from './llm-env';
 
+import { resolvePrompt } from './resolve-prompt';
+
+import { Agent, setGlobalDispatcher } from 'undici';
+
+setGlobalDispatcher(
+  new Agent({
+    // handshake/DNS/TLS
+    connect: { timeout: 120_000 }, // 120s
+    // wait for first byte of headers
+    headersTimeout: 600_000, // 10 min
+    // time between body chunks
+    bodyTimeout: 900_000, // 15 min
+  })
+);
+
 async function main(arg?: string) {
-  const cwd = process.cwd();
+  const prompt = resolvePrompt(arg);
 
-  const promptsDir = path.join(cwd, 'prompts');
-
-  const generationsDir = path.join(cwd, 'generations');
-
-  const promptFiles = fsSync.existsSync(promptsDir)
-    ? fsSync.readdirSync(promptsDir).filter(f => f.endsWith('.md'))
-    : [];
-
-  type Prompt = {
-    file: string;
-    path: string;
-    mtime: Date;
-    mtimeMs: number;
-    size: number;
-  };
-
-  const prompts = promptFiles
-    .map(file => {
-      const fullPath = path.join(promptsDir, file);
-
-      const st = fsSync.statSync(fullPath);
-
-      return {
-        file,
-        path: fullPath,
-        mtime: st.mtime,
-        mtimeMs: st.mtimeMs,
-        size: st.size,
-      } satisfies Prompt;
-    })
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-  let prompt: Prompt | null = null;
-
-  if (arg) {
-    const file = `${arg}.md`;
-
-    const matches = prompts.filter(p => p.file === file);
-
-    if (!matches || matches.length === 0) {
-      console.error(`Prompt "${arg}" does not exist in ${promptsDir}`);
-
-      process.exit(1);
-    }
-
-    prompt = matches[0] ?? null;
-  }
-
-  if (!prompt && prompts.length === 0) {
-    console.error(`No prompts found in ${promptsDir}`);
-
-    process.exit(1);
-  }
-
-  let usingMostRecent = false;
-
-  if (!prompt) {
-    usingMostRecent = true;
-
-    prompt = prompts[0] ?? null;
-  }
-
-  if (!prompt) {
-    console.error('Unexpected error: prompt is null');
-
-    process.exit(1);
-  }
-
-  if (usingMostRecent) {
-    console.log(`No prompt specified, running '${prompt.file}'`);
-  }
-
-  ///
+  const generationsDir = path.join(process.cwd(), 'generations');
 
   const now = new Date();
 
@@ -116,19 +59,22 @@ async function main(arg?: string) {
 
   // first read the raw script
 
+  const promptName = path.basename(prompt.file, '.md');
+
   const contents = await fs.readFile(prompt.path, 'utf-8');
 
   const result = await exec({
     contents,
     completeChat,
-    // models: 'gpt-5.2',
-    // thinking: 'off',
+
+    models: 'gpt-5.2',
+    thinking: 'high',
 
     // models: 'gemini-3-pro-preview',
     // thinking: 'low',
 
-    models: 'gpt-4o-mini-2024-07-18',
-    thinking: 'off',
+    // models: 'gpt-4o-mini-2024-07-18',
+    // thinking: 'off',
 
     logLevel: 'log',
     // logLevel: 'dir',
@@ -160,12 +106,15 @@ async function main(arg?: string) {
   fsSync.writeFileSync(path.join(generationsDir, 'response.md'), markdown);
 
   fsSync.writeFileSync(
-    path.join(generationsSubDir, `userPrompt-${stamp}.md`),
+    path.join(generationsSubDir, `userPrompt-${stamp}-${promptName}.md`),
     userPromptText
   );
 
   fsSync.writeFileSync(
-    path.join(generationsSubDir, `response-${stamp}-${modelForFile}.md`),
+    path.join(
+      generationsSubDir,
+      `response-${stamp}-${promptName}-${modelForFile}.md`
+    ),
     markdown
   );
 

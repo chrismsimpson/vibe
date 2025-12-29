@@ -79,6 +79,573 @@ const runtimeToString = (value: unknown): string | Error => {
   }
 };
 
+type MarkdownCodeBlock = {
+  lang: string | null;
+  content: string;
+};
+
+const stripSingleOuterCodeBlock = (raw: string): MarkdownCodeBlock | null => {
+  const trimmed = raw.trim();
+
+  // whole response is exactly one fenced block
+
+  const m = trimmed.match(
+    /^```([a-zA-Z0-9_-]+)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/m
+  );
+
+  if (!m) {
+    return null;
+  }
+
+  return {
+    lang: (m[1] ?? null)?.toLowerCase() ?? null,
+    content: m[2] ?? '',
+  };
+};
+
+const extractMarkdownCodeBlocks = (raw: string): MarkdownCodeBlock[] => {
+  const blocks: MarkdownCodeBlock[] = [];
+
+  // non-greedy capture between fences, allow any fence language, allow CRLF
+
+  const re = /```([a-zA-Z0-9_-]+)?[ \t]*\r?\n([\s\S]*?)```/g;
+
+  let m: RegExpExecArray | null;
+
+  do {
+    m = re.exec(raw);
+
+    if (!m) {
+      break;
+    }
+
+    blocks.push({
+      lang: (m[1] ?? null)?.toLowerCase() ?? null,
+      content: m[2] ?? '',
+    });
+  } while (m);
+
+  return blocks;
+};
+
+const findBalancedJsonValue = (
+  s: string,
+  start: number
+): { text: string; end: number } | null => {
+  const open = s[start];
+
+  if (open !== '{' && open !== '[') {
+    return null;
+  }
+
+  const stack: string[] = [open === '{' ? '}' : ']'];
+
+  let inQuote: '"' | "'" | null = null;
+
+  let escaped = false;
+
+  for (let i = start + 1; i < s.length; i++) {
+    const ch = s[i];
+
+    if (inQuote) {
+      if (escaped) {
+        escaped = false;
+
+        continue;
+      }
+
+      if (ch === '\\') {
+        escaped = true;
+
+        continue;
+      }
+
+      if (ch === inQuote) {
+        inQuote = null;
+      }
+
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      inQuote = ch;
+
+      continue;
+    }
+
+    if (ch === '{') {
+      stack.push('}');
+
+      continue;
+    }
+
+    if (ch === '[') {
+      stack.push(']');
+
+      continue;
+    }
+
+    if (ch === '}' || ch === ']') {
+      const expected = stack[stack.length - 1];
+
+      if (expected !== ch) {
+        return null;
+      }
+
+      stack.pop();
+
+      if (stack.length === 0) {
+        return {
+          text: s.slice(start, i + 1),
+          end: i,
+        };
+      }
+    }
+  }
+
+  return null;
+};
+
+const extractBalancedJsonSnippets = (raw: string, max = 10): string[] => {
+  const out: string[] = [];
+
+  for (let i = 0; i < raw.length && out.length < max; i++) {
+    const ch = raw[i];
+
+    if (ch !== '{' && ch !== '[') {
+      continue;
+    }
+
+    const found = findBalancedJsonValue(raw, i);
+
+    if (!found) {
+      continue;
+    }
+
+    out.push(found.text);
+
+    i = found.end; // skip forward
+  }
+
+  return out;
+};
+
+const convertSingleQuotedStringsToDouble = (input: string): string => {
+  let out = '';
+
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+
+    // inside double-quoted string: preserve, just track escapes
+
+    if (inDouble) {
+      out += ch;
+
+      if (escaped) {
+        escaped = false;
+
+        continue;
+      }
+
+      if (ch === '\\') {
+        escaped = true;
+
+        continue;
+      }
+
+      if (ch === '"') {
+        inDouble = false;
+      }
+
+      continue;
+    }
+
+    // inside single-quoted string: emit JSON double-quoted string
+    if (inSingle) {
+      if (escaped) {
+        escaped = false;
+
+        // handle \' -> '
+        if (ch === "'") {
+          out += "'";
+
+          continue;
+        }
+
+        // keep typical escapes (\n, \t, \\ ...)
+        // but if the escaped char is a double quote, it must remain escaped
+
+        out += `\\${ch}`;
+
+        continue;
+      }
+
+      if (ch === '\\') {
+        escaped = true;
+
+        continue;
+      }
+
+      if (ch === "'") {
+        inSingle = false;
+
+        out += '"';
+
+        continue;
+      }
+
+      // if we see a literal double quote inside a single-quoted string,
+      // it must be escaped because our output delimiter is "
+
+      if (ch === '"') {
+        out += '\\"';
+
+        continue;
+      }
+
+      out += ch;
+
+      continue;
+    }
+
+    // not in string
+    if (ch === '"') {
+      inDouble = true;
+
+      out += ch;
+
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+
+      out += '"';
+
+      continue;
+    }
+
+    out += ch;
+  }
+
+  return out;
+};
+
+const removeTrailingCommasOutsideStrings = (input: string): string => {
+  let out = '';
+
+  let inQuote: '"' | "'" | null = null;
+  let escaped = false;
+
+  const nextNonWs = (from: number): string | null => {
+    for (let i = from; i < input.length; i++) {
+      const ch = input[i];
+
+      if (ch !== ' ' && ch !== '\t' && ch !== '\r' && ch !== '\n') {
+        return ch ?? null;
+      }
+    }
+
+    return null;
+  };
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+
+    if (inQuote) {
+      out += ch;
+
+      if (escaped) {
+        escaped = false;
+
+        continue;
+      }
+
+      if (ch === '\\') {
+        escaped = true;
+
+        continue;
+      }
+
+      if (ch === inQuote) {
+        inQuote = null;
+      }
+
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      inQuote = ch;
+
+      out += ch;
+
+      continue;
+    }
+
+    if (ch === ',') {
+      const nxt = nextNonWs(i + 1);
+
+      if (nxt === '}' || nxt === ']') {
+        continue; // drop trailing comma
+      }
+    }
+
+    out += ch;
+  }
+
+  return out;
+};
+
+const quoteUnquotedKeys = (input: string): string => {
+  // heuristic; avoids most “JS object literal” outputs
+  return input.replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3');
+};
+
+const normalizeJsonLike = (raw: string): string => {
+  let s = raw.trim();
+
+  // Sometimes code block content starts with a "json" line:
+  // ```\njson\n{...}\n```
+
+  const label = s.match(/^(json|javascript|js|ts)\s*\r?\n([\s\S]*)$/i);
+
+  if (label) {
+    const rest = (label[2] ?? '').trim();
+
+    if (rest.startsWith('{') || rest.startsWith('[')) {
+      s = rest;
+    }
+  }
+
+  // smart quotes
+
+  s = s.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
+
+  // python-ish literals
+
+  s = s
+    .replace(/\bNone\b/g, 'null')
+    .replace(/\bTrue\b/g, 'true')
+    .replace(/\bFalse\b/g, 'false');
+
+  // tolerate JS-ish object literals
+
+  s = quoteUnquotedKeys(s);
+
+  // single quotes + trailing commas
+
+  s = convertSingleQuotedStringsToDouble(s);
+  s = removeTrailingCommasOutsideStrings(s);
+
+  return s.trim();
+};
+
+const tryParseJsonFromCandidate = (candidate: string): unknown | Error => {
+  const trimmed = candidate.trim();
+
+  if (trimmed.length === 0) {
+    return new Error('empty JSON candidate');
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // try relaxed normalization
+  }
+
+  const relaxed = normalizeJsonLike(trimmed);
+
+  try {
+    return JSON.parse(relaxed);
+  } catch {
+    return new Error('could not parse JSON from candidate');
+  }
+};
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+};
+
+const coerceContainerForExpectedTypeId = (
+  context: VibeScriptContext,
+  typeId: number,
+  parsed: unknown
+): unknown => {
+  const t = context.types[typeId];
+
+  if (!t) {
+    return parsed;
+  }
+
+  // expected array/tuple but got { something: [...] }
+
+  if ((t.kind === 'array' || t.kind === 'tuple') && !Array.isArray(parsed)) {
+    if (isPlainObject(parsed)) {
+      const keys = Object.keys(parsed);
+
+      if (keys.length === 1) {
+        const k = keys[0] as string;
+
+        // biome-ignore lint/suspicious/noExplicitAny: runtime indexing
+        const inner = (parsed as any)[k];
+
+        if (Array.isArray(inner)) {
+          return inner;
+        }
+      }
+    }
+  }
+
+  // expected object but got [ { ... } ]
+  if (t.kind === 'object' && Array.isArray(parsed) && parsed.length === 1) {
+    const inner = parsed[0];
+
+    if (isPlainObject(inner)) {
+      return inner;
+    }
+  }
+
+  return parsed;
+};
+
+// const parseOutputForTypeId = (
+//   context: VibeScriptContext,
+//   typeId: number,
+//   raw: string | null
+// ): unknown | Error => {
+//   if (raw === null) {
+//     return new Error('llm returned null output');
+//   }
+
+//   ///
+
+//   const normalized = (() => {
+//     const start = '```json\n';
+//     const end = '\n```';
+
+//     if (raw.startsWith(start) && raw.endsWith(end)) {
+//       return raw.slice(start.length, raw.length - end.length);
+//     }
+
+//     return raw;
+//   })();
+
+//   ///
+
+//   const t = context.types[typeId];
+
+//   if (!t) {
+//     return new Error('unknown expected type id');
+//   }
+
+//   // For now: string is always “accept raw”.
+
+//   if (t.kind === 'builtin' && t.name === 'string') {
+//     return normalized;
+//   }
+
+//   if (t.kind === 'builtin' && t.name === 'void') {
+//     return null;
+//   }
+
+//   // For non-string: try to parse JSON, then do minimal shape checks.
+
+//   let parsed: unknown;
+
+//   try {
+//     parsed = JSON.parse(normalized);
+//   } catch {
+//     // Fallbacks for number/bool if model doesn't output strict JSON.
+//     if (t.kind === 'builtin' && t.name === 'number') {
+//       const n = Number(normalized.trim());
+
+//       if (Number.isNaN(n)) {
+//         return new Error(
+//           `expected '${typeNameForTypeId(context, typeId)}' output, but could not parse number`
+//         );
+//       }
+
+//       return n;
+//     }
+
+//     if (t.kind === 'builtin' && t.name === 'boolean') {
+//       const v = normalized.trim().toLowerCase();
+
+//       if (v === 'true') {
+//         return true;
+//       }
+
+//       if (v === 'false') {
+//         return false;
+//       }
+
+//       return new Error(
+//         `expected '${typeNameForTypeId(context, typeId)}' output, but could not parse boolean`
+//       );
+//     }
+
+//     return new Error(
+//       `expected '${typeNameForTypeId(context, typeId)}' output, but could not parse JSON`
+//     );
+//   }
+
+//   if (t.kind === 'builtin') {
+//     if (t.name === 'number') {
+//       if (typeof parsed !== 'number') {
+//         return new Error(
+//           `expected '${typeNameForTypeId(context, typeId)}', got '${typeof parsed}'`
+//         );
+//       }
+
+//       return parsed;
+//     }
+
+//     if (t.name === 'boolean') {
+//       if (typeof parsed !== 'boolean') {
+//         return new Error(
+//           `expected '${typeNameForTypeId(context, typeId)}', got '${typeof parsed}'`
+//         );
+//       }
+
+//       return parsed;
+//     }
+
+//     // string handled earlier, void handled earlier
+
+//     return parsed;
+//   }
+
+//   if (t.kind === 'array' || t.kind === 'tuple') {
+//     if (!Array.isArray(parsed)) {
+//       return new Error(
+//         `expected '${typeNameForTypeId(context, typeId)}', got non-array JSON`
+//       );
+//     }
+
+//     return parsed;
+//   }
+
+//   if (t.kind === 'object') {
+//     if (
+//       typeof parsed !== 'object' ||
+//       parsed === null ||
+//       Array.isArray(parsed)
+//     ) {
+//       return new Error(
+//         `expected '${typeNameForTypeId(context, typeId)}', got non-object JSON`
+//       );
+//     }
+
+//     return parsed;
+//   }
+
+//   return parsed;
+// };
+
 const parseOutputForTypeId = (
   context: VibeScriptContext,
   typeId: number,
@@ -88,10 +655,31 @@ const parseOutputForTypeId = (
     return new Error('llm returned null output');
   }
 
-  ///
+  const t = context.types[typeId];
 
-  const normalized = (() => {
+  if (!t) {
+    return new Error('unknown expected type id');
+  }
+
+  // if we couldn't type-check the output type, be permissive: return raw text
+
+  if (t.kind === 'unknown') {
+    return raw;
+  }
+
+  // for string: keep behavior mostly the same, but also unwrap a single code block
+
+  if (t.kind === 'builtin' && t.name === 'string') {
+    const single = stripSingleOuterCodeBlock(raw);
+
+    if (single) {
+      return single.content;
+    }
+
+    // keep existing exact ```json normalization too (harmless)
+
     const start = '```json\n';
+
     const end = '\n```';
 
     if (raw.startsWith(start) && raw.endsWith(end)) {
@@ -99,118 +687,168 @@ const parseOutputForTypeId = (
     }
 
     return raw;
-  })();
-
-  ///
-
-  const t = context.types[typeId];
-
-  if (!t) {
-    return new Error('unknown expected type id');
-  }
-
-  // For now: string is always “accept raw”.
-
-  if (t.kind === 'builtin' && t.name === 'string') {
-    return normalized;
   }
 
   if (t.kind === 'builtin' && t.name === 'void') {
     return null;
   }
 
-  // For non-string: try to parse JSON, then do minimal shape checks.
+  // Build candidates in priority order:
+  // 1) entire-response single code block (common)
+  // 2) any fenced code blocks (prefer ```json)
+  // 3) balanced {...} / [...] snippets from within those
+  // 4) balanced snippets from whole raw
+  // 5) raw itself
+  const candidates: string[] = [];
+  const seen = new Set<string>();
 
-  let parsed: unknown;
+  const push = (s: string) => {
+    const key = s.trim();
 
-  try {
-    parsed = JSON.parse(normalized);
-  } catch {
-    // Fallbacks for number/bool if model doesn't output strict JSON.
-    if (t.kind === 'builtin' && t.name === 'number') {
-      const n = Number(normalized.trim());
+    if (key.length === 0) {
+      return;
+    }
 
-      if (Number.isNaN(n)) {
-        return new Error(
-          `expected '${typeNameForTypeId(context, typeId)}' output, but could not parse number`
+    if (seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+
+    candidates.push(s);
+  };
+
+  const single = stripSingleOuterCodeBlock(raw);
+
+  if (single) {
+    push(single.content);
+
+    for (const snippet of extractBalancedJsonSnippets(single.content)) {
+      push(snippet);
+    }
+  }
+
+  const blocks = extractMarkdownCodeBlocks(raw);
+
+  // prefer json-labeled first
+  for (const b of blocks.filter(b => b.lang === 'json')) {
+    push(b.content);
+
+    for (const snippet of extractBalancedJsonSnippets(b.content)) {
+      push(snippet);
+    }
+  }
+
+  for (const b of blocks.filter(b => b.lang !== 'json')) {
+    push(b.content);
+
+    for (const snippet of extractBalancedJsonSnippets(b.content)) {
+      push(snippet);
+    }
+  }
+
+  for (const snippet of extractBalancedJsonSnippets(raw)) {
+    push(snippet);
+  }
+
+  push(raw);
+
+  let lastErr: Error | null = null;
+
+  for (const cand of candidates) {
+    const parsed = tryParseJsonFromCandidate(cand);
+
+    if (parsed instanceof Error) {
+      lastErr = parsed;
+
+      continue;
+    }
+
+    const coerced = coerceContainerForExpectedTypeId(context, typeId, parsed);
+
+    // Validate minimal shape (same spirit as your original code)
+    if (t.kind === 'builtin') {
+      if (t.name === 'number') {
+        if (typeof coerced !== 'number') {
+          lastErr = new Error(
+            `expected '${typeNameForTypeId(context, typeId)}', got '${typeof coerced}'`
+          );
+
+          continue;
+        }
+
+        return coerced;
+      }
+
+      if (t.name === 'boolean') {
+        if (typeof coerced !== 'boolean') {
+          lastErr = new Error(
+            `expected '${typeNameForTypeId(context, typeId)}', got '${typeof coerced}'`
+          );
+
+          continue;
+        }
+
+        return coerced;
+      }
+
+      return coerced;
+    }
+
+    if (t.kind === 'array' || t.kind === 'tuple') {
+      if (!Array.isArray(coerced)) {
+        lastErr = new Error(
+          `expected '${typeNameForTypeId(context, typeId)}', got non-array JSON`
         );
+
+        continue;
       }
 
-      return n;
+      return coerced;
     }
 
-    if (t.kind === 'builtin' && t.name === 'boolean') {
-      const v = normalized.trim().toLowerCase();
-
-      if (v === 'true') {
-        return true;
-      }
-
-      if (v === 'false') {
-        return false;
-      }
-
-      return new Error(
-        `expected '${typeNameForTypeId(context, typeId)}' output, but could not parse boolean`
-      );
-    }
-
-    return new Error(
-      `expected '${typeNameForTypeId(context, typeId)}' output, but could not parse JSON`
-    );
-  }
-
-  if (t.kind === 'builtin') {
-    if (t.name === 'number') {
-      if (typeof parsed !== 'number') {
-        return new Error(
-          `expected '${typeNameForTypeId(context, typeId)}', got '${typeof parsed}'`
+    if (t.kind === 'object') {
+      if (!isPlainObject(coerced)) {
+        lastErr = new Error(
+          `expected '${typeNameForTypeId(context, typeId)}', got non-object JSON`
         );
+
+        continue;
       }
 
-      return parsed;
+      return coerced;
     }
 
-    if (t.name === 'boolean') {
-      if (typeof parsed !== 'boolean') {
-        return new Error(
-          `expected '${typeNameForTypeId(context, typeId)}', got '${typeof parsed}'`
-        );
+    return coerced;
+  }
+
+  // Final fallbacks for number/bool if response is mostly prose (no JSON candidates worked)
+  if (t.kind === 'builtin' && t.name === 'number') {
+    const m = raw.match(/-?\d+(\.\d+)?/);
+
+    if (m) {
+      const n = Number(m[0]);
+
+      if (!Number.isNaN(n)) {
+        return n;
       }
-
-      return parsed;
     }
-
-    // string handled earlier, void handled earlier
-
-    return parsed;
   }
 
-  if (t.kind === 'array' || t.kind === 'tuple') {
-    if (!Array.isArray(parsed)) {
-      return new Error(
-        `expected '${typeNameForTypeId(context, typeId)}', got non-array JSON`
-      );
-    }
+  if (t.kind === 'builtin' && t.name === 'boolean') {
+    const m = raw.match(/\b(true|false)\b/i);
 
-    return parsed;
+    if (m) {
+      return m[1]?.toLowerCase() === 'true';
+    }
   }
 
-  if (t.kind === 'object') {
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      Array.isArray(parsed)
-    ) {
-      return new Error(
-        `expected '${typeNameForTypeId(context, typeId)}', got non-object JSON`
-      );
-    }
-
-    return parsed;
-  }
-
-  return parsed;
+  return (
+    lastErr ??
+    new Error(
+      `expected '${typeNameForTypeId(context, typeId)}' output, but could not parse/validate it`
+    )
+  );
 };
 
 const takeLastRuntime = (
