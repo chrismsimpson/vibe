@@ -2726,7 +2726,8 @@ const parseCommentBlock = (
 };
 
 const parseTextBlock = (
-  parser: Parser<VibeScriptToken>
+  parser: Parser<VibeScriptToken>,
+  options?: { disableInterpolation?: boolean }
 ): VibeScriptTextBlock | Error => {
   if (parserIsEof(parser)) {
     return new Error('unexpected end of file parsing vibe script block');
@@ -2749,7 +2750,12 @@ const parseTextBlock = (
 
     // interpolation start: `${`
 
-    if (t.kind === 'text' && t.value != null && t.value.endsWith('$')) {
+    if (
+      options?.disableInterpolation !== true &&
+      t.kind === 'text' &&
+      t.value != null &&
+      t.value.endsWith('$')
+    ) {
       const next = parser.tokens[parser.position + 1];
 
       if (next?.kind === 'punc' && next.value === '{') {
@@ -2859,6 +2865,30 @@ const parseBlock = (
   return parseTextBlock(parser);
 };
 
+// const parseBlocks = (
+//   parser: Parser<VibeScriptToken>
+// ): VibeScriptBlock[] | Error => {
+//   if (parserIsEof(parser)) {
+//     return [];
+//   }
+
+//   ///
+
+//   const blocks: VibeScriptBlock[] = [];
+
+//   while (!parserIsEof(parser)) {
+//     const block = parseBlock(parser);
+
+//     if (block instanceof Error) {
+//       return block;
+//     }
+
+//     blocks.push(block);
+//   }
+
+//   return blocks;
+// };
+
 const parseBlocks = (
   parser: Parser<VibeScriptToken>
 ): VibeScriptBlock[] | Error => {
@@ -2866,18 +2896,42 @@ const parseBlocks = (
     return [];
   }
 
-  ///
-
   const blocks: VibeScriptBlock[] = [];
 
+  let inFence = false;
+
+  const isFenceDelimiterLine = (text: string): boolean => {
+    // allow indentation; fence is per-line because parseTextBlock breaks on newline
+
+    return text.trimStart().startsWith('```');
+  };
+
+  const getTextBlockLine = (b: VibeScriptTextBlock): string => {
+    // fence delimiter lines won't contain interpolations, so just join quasis
+
+    return b.parts.flatMap(p => ('quasis' in p ? [p.quasis] : [])).join('');
+  };
+
   while (!parserIsEof(parser)) {
-    const block = parseBlock(parser);
+    const block = inFence
+      ? parseTextBlock(parser, { disableInterpolation: true })
+      : parseBlock(parser);
 
     if (block instanceof Error) {
       return block;
     }
 
     blocks.push(block);
+
+    // toggle fence mode when we hit a ``` fence delimiter line
+
+    if (block && typeof block === 'object' && 'parts' in block) {
+      const line = getTextBlockLine(block as VibeScriptTextBlock);
+
+      if (isFenceDelimiterLine(line)) {
+        inFence = !inFence;
+      }
+    }
   }
 
   return blocks;
