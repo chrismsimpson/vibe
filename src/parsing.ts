@@ -18,7 +18,7 @@ export const lexerPeek = (lexer: Lexer): string | Error => {
     return new Error('eof reached');
   }
 
-  // biome-ignore lint/style/noNonNullAssertion: :|
+  // biome-ignore lint/style/noNonNullAssertion: ¯\_(ツ)_/¯
   return lexer.source.contents[lexer.position]!;
 };
 

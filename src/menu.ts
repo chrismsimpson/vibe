@@ -19,7 +19,7 @@ class MenuInterruptedError extends Error {
   }
 }
 
-// biome-ignore lint/suspicious/noConfusingVoidType: :^|
+// biome-ignore lint/suspicious/noConfusingVoidType: ¯\_(ツ)_/¯
 type NormalizeVoid<T> = [T] extends [void] ? undefined : T;
 
 type Choice<K extends string, R> = {
