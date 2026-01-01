@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import type { LLMCompleteChat, LLMModel } from './llm';
 import { resolvePrompt } from './resolve-prompt';
 import { parseVibeScript, typeCheckVibeScript } from './vibe';
-import { execVibeScript, VibeScriptResult } from './vibe-machine';
+import { execVibeScript } from './vibe-machine';
 
 async function main(arg?: string) {
   const prompt = resolvePrompt(arg);
@@ -37,33 +37,6 @@ async function main(arg?: string) {
     models: [] as LLMModel[],
     mode: 'output',
     logLevel: 'off',
-    // onPrompt: info => {
-    //   const title = info.name
-    //     ? `Step ${info.stepIndex}: ${info.name}`
-    //     : `Step ${info.stepIndex}`;
-
-    //   console.log(`\n=== ${title} ===`);
-
-    //   console.log(
-    //     `expects: ${info.expectsTypeName} -> output: ${info.outputTypeName}`
-    //   );
-
-    //   if (info.outputName) {
-    //     console.log(`assigns: ${info.outputName}`);
-    //   }
-
-    //   if (info.transforms && info.transforms.length > 0) {
-    //     console.log(`transforms: ${JSON.stringify(info.transforms)}`);
-    //   }
-
-    //   console.log('--- prompt ---');
-
-    //   process.stdout.write(
-    //     info.prompt.endsWith('\n') ? info.prompt : `${info.prompt}\n`
-    //   );
-
-    //   console.log('--- end prompt ---');
-    // },
   });
 
   if (result instanceof Error) {

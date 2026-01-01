@@ -5,8 +5,11 @@ import type {
 } from './llm-base';
 import {
   type LLMModel,
+  type LLMProvider,
   completeChatModel as baseCompleteChatModel,
+  completeChatModels as baseCompleteChatModels,
   completeChat as baseCompleteChat,
+  type LLMCompleteChatModels,
   type LLMCompleteChat,
 } from './llm';
 import { env } from './env';
@@ -33,7 +36,7 @@ export const completeChatModel = async ({
   });
 };
 
-export const completeChat: LLMCompleteChat = async ({
+export const completeChatModels: LLMCompleteChatModels = async ({
   models,
   messages,
   thinking,
@@ -42,10 +45,40 @@ export const completeChat: LLMCompleteChat = async ({
   messages: ChatCompletionMessage[] | string;
   thinking?: LLMThinking;
 }): Promise<[string, string | null, LLMAccounting] | Error> => {
-  return baseCompleteChat({
+  return baseCompleteChatModels({
     keys,
     models,
     messages,
     thinking,
+  });
+};
+
+export const completeChat: LLMCompleteChat = async (
+  props:
+    | {
+        models: (() => LLMModel[]) | LLMModel[] | LLMModel;
+        messages: ChatCompletionMessage[] | string;
+        thinking?: LLMThinking;
+      }
+    | {
+        messages: ChatCompletionMessage[] | string;
+        thinking?: LLMThinking;
+        provider?: LLMProvider;
+      }
+): Promise<[string, string | null, LLMAccounting] | Error> => {
+  if ('models' in props) {
+    return baseCompleteChat({
+      keys,
+      models: props.models,
+      messages: props.messages,
+      thinking: props.thinking,
+    });
+  }
+
+  return baseCompleteChat({
+    keys,
+    messages: props.messages,
+    thinking: props.thinking,
+    provider: props.provider,
   });
 };

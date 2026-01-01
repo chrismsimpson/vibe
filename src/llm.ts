@@ -8,15 +8,17 @@ import type {
 } from './llm-base';
 import {
   type GeminiLLMModel,
-  completeChat as completeChatGemini,
+  completeChatModel as completeChatGeminiModel,
   isGeminiLLMModel,
   weightForGeminiModel,
+  getGeminiModel,
 } from './llm-gemini';
 import {
   type OpenAILLMModel,
-  completeChat as completeChatOpenAI,
+  completeChatModel as completeChatOpenAIModel,
   isOpenAILLMModel,
   weightForOpenAIModel,
+  getOpenAIModel,
 } from './llm-openai';
 
 export type LLMModel = GeminiLLMModel | OpenAILLMModel;
@@ -25,25 +27,25 @@ const llmProviders = ['openai', 'gemini'] as const;
 
 export type LLMProvider = (typeof llmProviders)[number];
 
-// export const getModel = ({
-//   thinking,
-//   provider
-// }: {
-//   thinking?: LLMThinking;
-//   provider: LLMProvider;
-// }): LLMModel => {
-
-//   const _provider = provider ?? sample(llmProviders);
-
-//   const _thinking = thinking ?? 'auto'; // TODO: a different default, perhaps 'medium'?
-
-// }
-
-export type LLMCompleteChat = (args: {
+export type LLMCompleteChatModels = (args: {
   models: (() => LLMModel[]) | LLMModel[] | LLMModel;
   messages: ChatCompletionMessage[] | string;
   thinking?: LLMThinking;
 }) => Promise<[string, string | null, LLMAccounting] | Error>;
+
+export type LLMCompleteChat = (
+  args:
+    | {
+        models: (() => LLMModel[]) | LLMModel[] | LLMModel;
+        messages: ChatCompletionMessage[] | string;
+        thinking?: LLMThinking;
+      }
+    | {
+        messages: ChatCompletionMessage[] | string;
+        thinking?: LLMThinking;
+        provider?: LLMProvider;
+      }
+) => Promise<[string, string | null, LLMAccounting] | Error>;
 
 export const shuffle = (): LLMModel[] => {
   console.log('Shuffling models');
@@ -115,14 +117,14 @@ export const completeChatModel = async ({
   ///
 
   const result = isGeminiLLMModel(model)
-    ? await completeChatGemini({
+    ? await completeChatGeminiModel({
         apiKey: keys.gemini,
         model,
         messages,
         thinking,
       })
     : isOpenAILLMModel(model)
-      ? await completeChatOpenAI({
+      ? await completeChatOpenAIModel({
           apiKey: keys.openai,
           model,
           messages,
@@ -148,16 +150,18 @@ export const completeChatModel = async ({
   return [abbreviatedModel, raw, accounting];
 };
 
-export const completeChat = async ({
+type LLMKeys = {
+  openai?: string;
+  gemini?: string;
+};
+
+export const completeChatModels = async ({
   keys,
   models,
   messages,
   thinking,
 }: {
-  keys: {
-    openai?: string;
-    gemini?: string;
-  };
+  keys: LLMKeys;
   models: (() => LLMModel[]) | LLMModel[] | LLMModel;
   messages: ChatCompletionMessage[] | string;
   thinking?: LLMThinking;
@@ -183,4 +187,67 @@ export const completeChat = async ({
   }
 
   return new Error('Failed to complete chat');
+};
+
+export const getModel = ({
+  thinking,
+  provider,
+}: {
+  thinking?: LLMThinking;
+  provider?: LLMProvider;
+}): LLMModel | Error => {
+  const _provider = provider ?? sample(llmProviders);
+
+  const _thinking = thinking ?? 'medium'; // 'medium' is our default so we get decent quality outputs but we're not being exorbitant
+
+  if (_provider === 'gemini') {
+    return getGeminiModel(_thinking);
+  }
+
+  if (_provider === 'openai') {
+    return getOpenAIModel(_thinking);
+  }
+
+  return new Error(`Unknown provider: ${_provider}`);
+};
+
+export const completeChat = async (
+  props:
+    | {
+        keys: LLMKeys;
+        models: (() => LLMModel[]) | LLMModel[] | LLMModel;
+        messages: ChatCompletionMessage[] | string;
+        thinking?: LLMThinking;
+      }
+    | {
+        keys: LLMKeys;
+        messages: ChatCompletionMessage[] | string;
+        thinking?: LLMThinking;
+        provider?: LLMProvider;
+      }
+): Promise<[string, string | null, LLMAccounting] | Error> => {
+  if ('models' in props) {
+    return completeChatModels({
+      keys: props.keys,
+      models: props.models,
+      messages: props.messages,
+      thinking: props.thinking,
+    });
+  }
+
+  const model = getModel({
+    thinking: props.thinking,
+    provider: props.provider,
+  });
+
+  if (model instanceof Error) {
+    return model;
+  }
+
+  return completeChatModel({
+    keys: props.keys,
+    model,
+    messages: props.messages,
+    thinking: props.thinking,
+  });
 };

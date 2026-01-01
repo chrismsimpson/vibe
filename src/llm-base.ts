@@ -1,6 +1,12 @@
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
+export type ChatMessageContent = string | ChatContentPart[];
+
 export interface ChatCompletionMessage {
   role: string | null;
-  content: string;
+  content: ChatMessageContent;
 }
 
 export const LLM_REQUEST_HARDCAP_MS = 10 * 60_000; // 10 minutes
@@ -48,6 +54,18 @@ export const estimateTokensForText = (text: string): number => {
   return tokenEstimate;
 };
 
+export const estimateTokensForPart = (part: ChatContentPart): number => {
+  if (part.type === 'text') {
+    return estimateTokensForText(part.text);
+  }
+
+  if (part.type === 'image_url') {
+    return estimateTokensForText(part.image_url.url);
+  }
+
+  return 0;
+};
+
 export const estimateTokensForMessages = (
   msgs: ChatCompletionMessage[] | string
 ): number => {
@@ -58,7 +76,14 @@ export const estimateTokensForMessages = (
   let total = 0;
 
   for (const m of msgs) {
-    total += estimateTokensForText(m.content ?? '');
+    if (typeof m.content === 'string') {
+      total += estimateTokensForText(m.content);
+    } else if (Array.isArray(m.content)) {
+      total += m.content.reduce(
+        (acc, part) => acc + estimateTokensForPart(part),
+        0
+      );
+    }
   }
 
   return total;

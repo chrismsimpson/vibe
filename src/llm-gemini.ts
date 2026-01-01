@@ -35,7 +35,11 @@ export const isGeminiChatRequestMessageRole = (
 // request
 
 export interface GeminiChatCompletionRequestMessagePart {
-  text: string;
+  text?: string;
+  inline_data?: {
+    mime_type: string;
+    data: string;
+  };
 }
 
 export interface GeminiChatCompletionRequestMessage {
@@ -181,7 +185,7 @@ export const completeChatGemini = async ({
   return json as GeminiChatCompletionResponse;
 };
 
-export const completeChat = async ({
+export const completeChatModel = async ({
   apiKey,
   model,
   messages,
@@ -269,24 +273,60 @@ export const completeChat = async ({
 
 // message mapping
 
+const parseDataUri = (url: string) => {
+  const match = url.match(/^data:([^;]+);base64,(.+)$/);
+  if (match && match.length === 3) {
+    // biome-ignore lint/style/noNonNullAssertion: ¯\_(ツ)_/¯
+    return { mime_type: match[1]!, data: match[2]! };
+  }
+  return null;
+};
+
 export const toGeminiChatCompletionRequestMessages = (
   messages: ChatCompletionMessage[] | string
 ): GeminiChatCompletionRequestMessage[] | string => {
-  return typeof messages === 'string'
-    ? messages
-    : messages.map(m => {
-        let _role =
-          m.role && isGeminiChatRequestMessageRole(m.role) ? m.role : null;
+  if (typeof messages === 'string') return messages;
 
-        if (m.role === 'system' || m.role === 'developer') {
-          _role = 'model';
+  return messages.map(m => {
+    let _role =
+      m.role && isGeminiChatRequestMessageRole(m.role) ? m.role : null;
+
+    if (m.role === 'system' || m.role === 'developer') {
+      _role = 'model';
+    }
+
+    // handle generic content parts mapping
+
+    const parts: GeminiChatCompletionRequestMessagePart[] = [];
+
+    if (typeof m.content === 'string') {
+      parts.push({ text: m.content });
+    } else {
+      for (const part of m.content) {
+        if (part.type === 'text') {
+          parts.push({ text: part.text });
+        } else if (part.type === 'image_url') {
+          // attempt to parse Data URI for Gemini
+
+          const imageData = parseDataUri(part.image_url.url);
+
+          if (imageData) {
+            parts.push({ inline_data: imageData });
+          } else {
+            // fallback: If not a data URI, pass URL as text
+            // (gemini cannot fetch public URLs natively without tools)
+
+            parts.push({ text: part.image_url.url });
+          }
         }
+      }
+    }
 
-        return {
-          role: _role ?? 'user',
-          parts: [{ text: m.content }],
-        };
-      });
+    return {
+      role: _role ?? 'user',
+      parts,
+    };
+  });
 };
 
 // heuristics
@@ -360,36 +400,29 @@ export const weightForGeminiModel = (m: GeminiLLMModel): number => {
 
 // model resolution
 
-// export const getGeminiModel = (thinking: LLMThinking): GeminiLLMModel => {
-
-//   // a simple switch in order of:
-// // export const llmThinkingLevels = [
-// //   'default',
-// //   'off',
-// //   'auto',
-// //   'low',
-// //   'medium',
-// //   'high',
-// //   'max',
-// // ] as const;
-// }
-
 export const getGeminiModel = (thinking: LLMThinking): GeminiLLMModel => {
-  // Handle numeric specific budgets
+  // handle numeric specific budgets
+
   if (typeof thinking === 'number') {
     // 0 or very low budget -> Flash
+
     if (thinking <= 1024) {
       return 'gemini-2.0-flash';
     }
-    // High budgets (> 8k) -> 3 Pro Preview
+
+    // high budgets (> 8k) -> 3 Pro Preview
+
     if (thinking > 8192) {
       return 'gemini-3-pro-preview';
     }
-    // Middle range -> 2.5 Pro
+
+    // middle range -> 2.5 Pro
+
     return 'gemini-2.5-pro';
   }
 
-  // Handle named levels
+  // handle named levels
+
   switch (thinking) {
     case 'default':
     case 'off':

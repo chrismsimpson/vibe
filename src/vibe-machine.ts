@@ -6,7 +6,8 @@ import type {
   LLMThinking,
   LLMTokenUsage,
 } from './llm-base';
-import type { LLMCompleteChat, LLMModel } from './llm';
+// import type { LLMCompleteChatModels, LLMModel } from './llm';
+import type { LLMCompleteChat, LLMModel, LLMProvider } from './llm';
 import {
   type CheckedVibeScript,
   type CheckedVibeScriptExpression,
@@ -1280,24 +1281,46 @@ const renderTextBlock = (
   return out;
 };
 
-export const execVibeScript = async ({
-  script,
-  completeChat,
-  models,
-  thinking,
-  logLevel,
-  mode,
-}: {
-  script: CheckedVibeScript;
-  completeChat: LLMCompleteChat;
-  models: (() => LLMModel[]) | LLMModel[] | LLMModel;
-  thinking?: LLMThinking;
-  logLevel?: VibeScriptLogLevel;
-  mode?: VibeScriptExecMode;
-}): Promise<VibeScriptResult | Error> => {
+// export const execVibeScript = async ({
+//   script,
+//   // completeChatModels,
+//   completeChat,
+//   models,
+//   thinking,
+//   logLevel,
+//   mode,
+// }: {
+//   script: CheckedVibeScript;
+//   // completeChatModels: LLMCompleteChatModels;
+//   completeChat: LLMCompleteChat;
+//   models: (() => LLMModel[]) | LLMModel[] | LLMModel;
+//   thinking?: LLMThinking;
+//   logLevel?: VibeScriptLogLevel;
+//   mode?: VibeScriptExecMode;
+// }): Promise<VibeScriptResult | Error> => {
+
+export const execVibeScript = async (
+  props:
+    | {
+        script: CheckedVibeScript;
+        completeChat: LLMCompleteChat;
+        models: (() => LLMModel[]) | LLMModel[] | LLMModel;
+        thinking?: LLMThinking;
+        logLevel?: VibeScriptLogLevel;
+        mode?: VibeScriptExecMode;
+      }
+    | {
+        script: CheckedVibeScript;
+        completeChat: LLMCompleteChat;
+        thinking?: LLMThinking;
+        provider?: LLMProvider;
+        logLevel?: VibeScriptLogLevel;
+        mode?: VibeScriptExecMode;
+      }
+): Promise<VibeScriptResult | Error> => {
   const env: VibeScriptRuntimeEnv = {};
 
-  const _mode: VibeScriptExecMode = mode ?? 'run';
+  const script = props.script;
 
   let stepIndex = 0;
 
@@ -1305,9 +1328,11 @@ export const execVibeScript = async ({
 
   const results: VibeScriptStepResult[] = [];
 
-  const usesSteps = script.blocks.some(b => b.kind === 'step');
+  const usesSteps = props.script.blocks.some(b => b.kind === 'step');
 
-  const _logLevel: VibeScriptLogLevel = logLevel ?? 'off';
+  const _logLevel: VibeScriptLogLevel = props.logLevel ?? 'off';
+
+  const _mode: VibeScriptExecMode = props.mode ?? 'run';
 
   const canWriteSameLine =
     typeof process !== 'undefined' &&
@@ -1579,6 +1604,7 @@ export const execVibeScript = async ({
       }
 
       // keep the “conversation shape” moving forward (optional but nice)
+
       messages = [
         ...nextMessages,
         {
@@ -1596,11 +1622,24 @@ export const execVibeScript = async ({
 
     // RUN MODE: do the real LLM call
 
-    const completion = await completeChat({
-      models,
-      messages: nextMessages,
-      thinking,
-    });
+    // const completion = await completeChatModels({
+    //   models,
+    //   messages: nextMessages,
+    //   thinking,
+    // });
+
+    const completion =
+      'models' in props
+        ? await props.completeChat({
+            models: props.models,
+            messages: nextMessages,
+            thinking: props.thinking,
+          })
+        : await props.completeChat({
+            provider: props.provider,
+            messages: nextMessages,
+            thinking: props.thinking,
+          });
 
     stepIndex++;
 
@@ -1814,20 +1853,38 @@ export const execVibeScript = async ({
   };
 };
 
-export const exec = async ({
-  contents,
-  completeChat,
-  models,
-  thinking,
-  logLevel,
-}: {
-  contents: string;
-  completeChat: LLMCompleteChat;
-  models: (() => LLMModel[]) | LLMModel[] | LLMModel;
-  thinking?: LLMThinking;
-  logLevel?: VibeScriptLogLevel;
-}): Promise<VibeScriptResult | Error> => {
-  const parsed = parseVibeScript(contents);
+// export const exec = async ({
+//   contents,
+//   completeChatModels,
+//   models,
+//   thinking,
+//   logLevel,
+// }: {
+//   contents: string;
+//   completeChatModels: LLMCompleteChatModels;
+//   models: (() => LLMModel[]) | LLMModel[] | LLMModel;
+//   thinking?: LLMThinking;
+//   logLevel?: VibeScriptLogLevel;
+// }): Promise<VibeScriptResult | Error> => {
+
+export const exec = async (
+  props:
+    | {
+        contents: string;
+        completeChat: LLMCompleteChat;
+        models: (() => LLMModel[]) | LLMModel[] | LLMModel;
+        thinking?: LLMThinking;
+        logLevel?: VibeScriptLogLevel;
+      }
+    | {
+        contents: string;
+        completeChat: LLMCompleteChat;
+        thinking?: LLMThinking;
+        provider?: LLMProvider;
+        logLevel?: VibeScriptLogLevel;
+      }
+): Promise<VibeScriptResult | Error> => {
+  const parsed = parseVibeScript(props.contents);
 
   if (parsed instanceof Error) {
     return parsed;
@@ -1839,13 +1896,21 @@ export const exec = async ({
     return checked;
   }
 
-  return execVibeScript({
-    script: checked,
-    completeChat,
-    models,
-    thinking,
-    logLevel,
-  });
+  return 'models' in props
+    ? await execVibeScript({
+        script: checked,
+        completeChat: props.completeChat,
+        models: props.models,
+        thinking: props.thinking,
+        logLevel: props.logLevel,
+      })
+    : await execVibeScript({
+        script: checked,
+        completeChat: props.completeChat,
+        thinking: props.thinking,
+        provider: props.provider,
+        logLevel: props.logLevel,
+      });
 };
 
 export const markdownify = (result: VibeScriptResult): string => {

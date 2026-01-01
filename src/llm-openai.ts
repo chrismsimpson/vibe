@@ -56,9 +56,20 @@ const isOpenAIChatRequestMessageRole = (
 
 // request
 
+// export interface OpenAIChatRequestMessage {
+//   role: OpenAIChatRequestMessageRole;
+//   content: string;
+// }
+
+export type OpenAIChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
+export type OpenAIChatMessageContent = string | OpenAIChatContentPart[];
+
 export interface OpenAIChatRequestMessage {
   role: OpenAIChatRequestMessageRole;
-  content: string;
+  content: OpenAIChatMessageContent;
 }
 
 // response
@@ -176,7 +187,7 @@ export const completeChatOpenAI = async ({
   return json as OpenAIChatCompletionResponse;
 };
 
-export const completeChat = async ({
+export const completeChatModel = async ({
   apiKey,
   model,
   messages,
@@ -371,4 +382,14 @@ export const weightForOpenAIModel = (m: OpenAILLMModel): number => {
   }
 
   return 1.0;
+};
+
+// model resolution
+
+export const getOpenAIModel = (thinking: LLMThinking): OpenAILLMModel => {
+  if (thinking === 'off') {
+    return 'gpt-4o-mini-2024-07-18';
+  }
+
+  return 'gpt-5.2';
 };
