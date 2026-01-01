@@ -1,4 +1,5 @@
 import ldShuffle from 'lodash/shuffle';
+import sample from 'lodash/sample';
 import type {
   ChatCompletionMessage,
   LLMAccounting,
@@ -19,6 +20,24 @@ import {
 } from './llm-openai';
 
 export type LLMModel = GeminiLLMModel | OpenAILLMModel;
+
+const llmProviders = ['openai', 'gemini'] as const;
+
+export type LLMProvider = (typeof llmProviders)[number];
+
+// export const getModel = ({
+//   thinking,
+//   provider
+// }: {
+//   thinking?: LLMThinking;
+//   provider: LLMProvider;
+// }): LLMModel => {
+
+//   const _provider = provider ?? sample(llmProviders);
+
+//   const _thinking = thinking ?? 'auto'; // TODO: a different default, perhaps 'medium'?
+
+// }
 
 export type LLMCompleteChat = (args: {
   models: (() => LLMModel[]) | LLMModel[] | LLMModel;
@@ -95,40 +114,6 @@ export const completeChatModel = async ({
 
   ///
 
-  // const tokenSplitRegex = /\s+/;
-
-  // const estimateTokensForText = (text: string): number => {
-  //   const words = text.split(tokenSplitRegex).filter(w => w.length > 0);
-
-  //   let tokenEstimate = 0;
-
-  //   const incTokensEstimate = (w: string) => {
-  //     tokenEstimate += Math.ceil(w.length / 3);
-  //   };
-
-  //   words.forEach(incTokensEstimate);
-
-  //   return tokenEstimate;
-  // };
-
-  // const estimateTokensForMessages = (
-  //   msgs: ChatCompletionMessage[] | string
-  // ): number => {
-  //   if (typeof msgs === 'string') {
-  //     return estimateTokensForText(msgs);
-  //   }
-
-  //   let total = 0;
-
-  //   for (const m of msgs) {
-  //     total += estimateTokensForText(m.content ?? '');
-  //   }
-
-  //   return total;
-  // };
-
-  ///
-
   const result = isGeminiLLMModel(model)
     ? await completeChatGemini({
         apiKey: keys.gemini,
@@ -161,180 +146,6 @@ export const completeChatModel = async ({
   };
 
   return [abbreviatedModel, raw, accounting];
-
-  // if (isGeminiLLMModel(model)) {
-  //   const geminiApiKey = keys.gemini;
-
-  //   if (!geminiApiKey) {
-  //     return new Error('Gemini API key is not set');
-  //   }
-
-  //   const thinkingBudget = getGeminiThinkingBudget(model, thinking);
-
-  //   const response = await completeChatGemini({
-  //     apiKey: geminiApiKey,
-  //     model,
-  //     messages: toGeminiChatCompletionRequestMessages(messages),
-  //     thinkingBudget,
-  //   });
-
-  //   if (response instanceof Error) {
-  //     return response;
-  //   }
-
-  //   const raw =
-  //     response.candidates[0]?.content.parts.map(part => part.text).join('\n') ??
-  //     null;
-
-  //   const promptTokens = response.usageMetadata?.promptTokenCount;
-  //   const completionTokens = response.usageMetadata?.candidatesTokenCount;
-  //   const totalTokens = response.usageMetadata?.totalTokenCount;
-
-  //   let estimated = false;
-
-  //   const inputTokens = (() => {
-  //     if (typeof promptTokens === 'number' && Number.isFinite(promptTokens)) {
-  //       return promptTokens;
-  //     }
-
-  //     estimated = true;
-
-  //     return estimateTokensForMessages(messages);
-  //   })();
-
-  //   const outputTokens = (() => {
-  //     if (
-  //       typeof completionTokens === 'number' &&
-  //       Number.isFinite(completionTokens)
-  //     ) {
-  //       return completionTokens;
-  //     }
-
-  //     estimated = true;
-
-  //     return estimateTokensForText(raw ?? '');
-  //   })();
-
-  //   const thinkingTokens = 0;
-
-  //   const total = (() => {
-  //     if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
-  //       return totalTokens;
-  //     }
-
-  //     if (estimated === false) {
-  //       estimated = true;
-  //     }
-
-  //     return inputTokens + outputTokens + thinkingTokens;
-  //   })();
-
-  //   const tokens: LLMTokenUsage = {
-  //     inputTokens,
-  //     outputTokens,
-  //     thinkingTokens,
-  //     totalTokens: total,
-  //     estimated,
-  //   };
-
-  //   const accounting: LLMAccounting = {
-  //     tokens,
-  //     costUnits: computeCostUnits(tokens, model),
-  //   };
-
-  //   return [abbreviatedModel, raw, accounting];
-  // }
-
-  // if (isOpenAILLMModel(model)) {
-  //   const openAIApiKey = keys.openai;
-
-  //   if (!openAIApiKey) {
-  //     return new Error('OpenAI API key is not set');
-  //   }
-
-  //   const reasoningEffort = getReasoningEffort(thinking);
-
-  //   const response = await completeChatOpenAI({
-  //     apiKey: openAIApiKey,
-  //     model,
-  //     messages: toOpenAIChatCompletionRequestMessages(model, messages),
-  //     reasoningEffort,
-  //   });
-
-  //   if (response instanceof Error) {
-  //     return response;
-  //   }
-
-  //   const raw = response.choices[0]?.message.content ?? null;
-
-  //   const promptTokens = response.usage?.prompt_tokens;
-  //   const completionTokens = response.usage?.completion_tokens;
-  //   const totalTokens = response.usage?.total_tokens;
-
-  //   const reasoningTokens =
-  //     response.usage?.completion_tokens_details?.reasoning_tokens ??
-  //     response.usage?.reasoning_tokens ??
-  //     0;
-
-  //   let estimated = false;
-
-  //   const inputTokens = (() => {
-  //     if (typeof promptTokens === 'number' && Number.isFinite(promptTokens)) {
-  //       return promptTokens;
-  //     }
-
-  //     estimated = true;
-
-  //     return estimateTokensForMessages(messages);
-  //   })();
-
-  //   const outputTokens = (() => {
-  //     if (
-  //       typeof completionTokens === 'number' &&
-  //       Number.isFinite(completionTokens)
-  //     ) {
-  //       return completionTokens;
-  //     }
-
-  //     estimated = true;
-
-  //     return estimateTokensForText(raw ?? '');
-  //   })();
-
-  //   const thinkingTokens =
-  //     typeof reasoningTokens === 'number' && Number.isFinite(reasoningTokens)
-  //       ? reasoningTokens
-  //       : 0;
-
-  //   const total = (() => {
-  //     if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
-  //       return totalTokens;
-  //     }
-
-  //     if (estimated === false) {
-  //       estimated = true;
-  //     }
-
-  //     return inputTokens + outputTokens + thinkingTokens;
-  //   })();
-
-  //   const tokens: LLMTokenUsage = {
-  //     inputTokens,
-  //     outputTokens,
-  //     thinkingTokens,
-  //     totalTokens: total,
-  //     estimated,
-  //   };
-
-  //   const accounting: LLMAccounting = {
-  //     tokens,
-  //     costUnits: computeCostUnits(tokens, model),
-  //   };
-
-  //   return [abbreviatedModel, raw, accounting];
-  // }
-
-  // return new Error(`Unknown model: ${model}`);
 };
 
 export const completeChat = async ({

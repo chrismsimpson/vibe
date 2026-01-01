@@ -3178,11 +3178,11 @@ const createContext = (): VibeScriptContext => {
   };
 };
 
-const UnknownTypeId = 0;
-const VoidTypeId = 1;
-const BooleanTypeId = 2;
-const NumberTypeId = 3;
-const StringTypeId = 4;
+export const UnknownTypeId = 0;
+export const VoidTypeId = 1;
+export const BooleanTypeId = 2;
+export const NumberTypeId = 3;
+export const StringTypeId = 4;
 
 const typeInfoEq = (l: VibeScriptTypeInfo, r: VibeScriptTypeInfo) => {
   if (l.kind !== r.kind) {

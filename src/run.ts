@@ -20,6 +20,20 @@ setGlobalDispatcher(
   })
 );
 
+// const MODELS = 'gpt-5.2';
+// const THINKING = 'high';
+
+// const MODELS = 'gemini-3-pro-preview';
+// const THINKING = 'low';
+
+const MODELS = 'gemini-3-pro-preview';
+const THINKING = 'medium';
+
+// const MODELS = 'gpt-4o-mini-2024-07-18';
+// const THINKING = 'off';
+
+const LOG_LEVEL: 'log' = 'log';
+
 async function main(arg?: string) {
   const prompt = resolvePrompt(arg);
 
@@ -67,17 +81,10 @@ async function main(arg?: string) {
     contents,
     completeChat,
 
-    models: 'gpt-5.2',
-    thinking: 'high',
+    models: MODELS,
+    thinking: THINKING,
 
-    // models: 'gemini-3-pro-preview',
-    // thinking: 'low',
-
-    // models: 'gpt-4o-mini-2024-07-18',
-    // thinking: 'off',
-
-    logLevel: 'log',
-    // logLevel: 'dir',
+    logLevel: LOG_LEVEL,
   });
 
   if (result instanceof Error) {

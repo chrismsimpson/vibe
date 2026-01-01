@@ -7,6 +7,7 @@
     "vibe": "ts-node src/run.ts",
     "parse": "ts-node src/parse.ts",
     "type-check": "ts-node src/type-check.ts",
+    "output": "ts-node src/output.ts",
     "archive": "ts-node src/archive.ts",
     "build": "tsc"
   },

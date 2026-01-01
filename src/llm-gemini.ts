@@ -357,3 +357,51 @@ export const weightForGeminiModel = (m: GeminiLLMModel): number => {
 
   return 1.0;
 };
+
+// model resolution
+
+// export const getGeminiModel = (thinking: LLMThinking): GeminiLLMModel => {
+
+//   // a simple switch in order of:
+// // export const llmThinkingLevels = [
+// //   'default',
+// //   'off',
+// //   'auto',
+// //   'low',
+// //   'medium',
+// //   'high',
+// //   'max',
+// // ] as const;
+// }
+
+export const getGeminiModel = (thinking: LLMThinking): GeminiLLMModel => {
+  // Handle numeric specific budgets
+  if (typeof thinking === 'number') {
+    // 0 or very low budget -> Flash
+    if (thinking <= 1024) {
+      return 'gemini-2.0-flash';
+    }
+    // High budgets (> 8k) -> 3 Pro Preview
+    if (thinking > 8192) {
+      return 'gemini-3-pro-preview';
+    }
+    // Middle range -> 2.5 Pro
+    return 'gemini-2.5-pro';
+  }
+
+  // Handle named levels
+  switch (thinking) {
+    case 'default':
+    case 'off':
+    case 'low':
+      return 'gemini-2.0-flash';
+
+    case 'auto':
+    case 'medium':
+      return 'gemini-2.5-pro';
+
+    case 'high':
+    case 'max':
+      return 'gemini-3-pro-preview';
+  }
+};

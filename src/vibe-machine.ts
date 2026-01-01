@@ -18,6 +18,7 @@ import {
   type CheckedVibeScriptBlock,
   parseVibeScript,
   typeCheckVibeScript,
+  StringTypeId,
 } from './vibe';
 
 export type VibeScriptRuntimeEnv = Record<string, unknown>;
@@ -38,6 +39,51 @@ export type VibeScriptResult = {
   messages: ChatCompletionMessage[];
   steps: VibeScriptStepResult[];
   accounting: LLMAccounting;
+};
+
+export type VibeScriptExecMode = 'run' | 'output';
+
+const placeholderForTypeId = (
+  context: VibeScriptContext,
+  typeId: number,
+  label: string
+): unknown => {
+  const t = context.types[typeId];
+
+  if (!t) {
+    return `<${label}: unknown>`;
+  }
+
+  if (t.kind === 'builtin') {
+    if (t.name === 'string') return `<${label}: string>`;
+    if (t.name === 'number') return 0;
+    if (t.name === 'boolean') return false;
+    if (t.name === 'void') return null;
+    return `<${label}: ${t.name}>`;
+  }
+
+  if (t.kind === 'array' || t.kind === 'tuple') {
+    return [];
+  }
+
+  if (t.kind === 'object') {
+    return {};
+  }
+
+  // unknown / anything else
+  return `<${label}: ${typeNameForTypeId(context, typeId)}>`;
+};
+
+const placeholderToAssistantContent = (v: unknown): string => {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
 };
 
 const getBuiltinTypeId = (
@@ -1240,14 +1286,20 @@ export const execVibeScript = async ({
   models,
   thinking,
   logLevel,
+  mode,
 }: {
   script: CheckedVibeScript;
   completeChat: LLMCompleteChat;
   models: (() => LLMModel[]) | LLMModel[] | LLMModel;
   thinking?: LLMThinking;
   logLevel?: VibeScriptLogLevel;
+  mode?: VibeScriptExecMode;
 }): Promise<VibeScriptResult | Error> => {
   const env: VibeScriptRuntimeEnv = {};
+
+  const _mode: VibeScriptExecMode = mode ?? 'run';
+
+  let stepIndex = 0;
 
   let messages: ChatCompletionMessage[] = [];
 
@@ -1376,7 +1428,8 @@ export const execVibeScript = async ({
       costUnits: 0,
     };
 
-    // Transform-only step (no LLM call)
+    // transform-only step (no LLM call)
+
     if (current.inputName !== null) {
       if (current.prompt.trim().length !== 0) {
         const stepErr = new Error(
@@ -1454,7 +1507,8 @@ export const execVibeScript = async ({
       return null;
     }
 
-    // Normal LLM step
+    // normal LLM step
+
     const prompt = current.prompt;
 
     if (prompt.trim().length === 0) {
@@ -1477,11 +1531,78 @@ export const execVibeScript = async ({
       },
     ];
 
+    // OUTPUT MODE: don’t call the LLM, but still “advance” with placeholders
+
+    if (_mode === 'output') {
+      const zeroAccounting: LLMAccounting = {
+        tokens: {
+          inputTokens: 0,
+          outputTokens: 0,
+          thinkingTokens: 0,
+          totalTokens: 0,
+          estimated: false,
+        },
+        costUnits: 0,
+      };
+
+      const label = current.name ?? `step_${stepIndex}`;
+
+      const placeholder = placeholderForTypeId(
+        script.context,
+        current.outputTypeId,
+        label
+      );
+
+      const stepResult: VibeScriptStepResult = {
+        name: current.name,
+        expectsTypeId: current.expectsTypeId,
+        outputTypeId: current.outputTypeId,
+        prompt,
+        model: 'output',
+        raw: null,
+        value: placeholder,
+        accounting: zeroAccounting,
+      };
+
+      results.push(stepResult);
+
+      if (current.outputName) {
+        if (current.outputName in env) {
+          const name = current.outputName;
+
+          current = null;
+
+          return new Error(`redefinition of variable '${name}' at runtime`);
+        }
+
+        env[current.outputName] = placeholder;
+      }
+
+      // keep the “conversation shape” moving forward (optional but nice)
+      messages = [
+        ...nextMessages,
+        {
+          role: 'assistant',
+          content: placeholderToAssistantContent(placeholder),
+        },
+      ];
+
+      current = null;
+
+      stepIndex++;
+
+      return null;
+    }
+
+    // RUN MODE: do the real LLM call
+
     const completion = await completeChat({
       models,
       messages: nextMessages,
       thinking,
     });
+
+    stepIndex++;
 
     if (completion instanceof Error) {
       if (_logLevel !== 'off') {
@@ -1500,13 +1621,13 @@ export const execVibeScript = async ({
       costUnits: totalAccounting.costUnits + accounting.costUnits,
     };
 
-    const parsed = parseOutputForTypeId(
-      script.context,
-      current.expectsTypeId,
-      raw
-    );
-
-    const t = applyTransformsRuntime(parsed, current.transforms);
+    const value: unknown =
+      current.expectsTypeId === StringTypeId
+        ? raw
+        : applyTransformsRuntime(
+            parseOutputForTypeId(script.context, current.expectsTypeId, raw),
+            current.transforms
+          );
 
     const stepResult: VibeScriptStepResult = {
       name: current.name,
@@ -1515,14 +1636,16 @@ export const execVibeScript = async ({
       prompt,
       model,
       raw,
-      value: t,
+      value,
       accounting,
     };
 
     results.push(stepResult);
 
-    const err =
-      parsed instanceof Error ? parsed : t instanceof Error ? t : null;
+    // const err =
+    //   parsed instanceof Error ? parsed : t instanceof Error ? t : null;
+
+    const err = value instanceof Error ? value : null;
 
     if (_logLevel !== 'off') {
       endSameLine(err === null, accounting.costUnits);
@@ -1549,7 +1672,7 @@ export const execVibeScript = async ({
         return assignErr;
       }
 
-      env[current.outputName] = t;
+      env[current.outputName] = value;
     }
 
     messages = [
