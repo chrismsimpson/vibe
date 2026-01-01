@@ -1381,10 +1381,6 @@ const parseStep = (parser: Parser<VibeScriptToken>): VibeScriptStep | Error => {
       }
 
       if (kw.value === 'expect') {
-        parser.position += 1;
-
-        ///
-
         const preamble = parsePreamble(parser, {
           stopOnUnknownClause: true,
         });
