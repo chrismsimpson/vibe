@@ -249,6 +249,17 @@ export const lexVibeScriptToken = (lexer: Lexer): VibeScriptToken | Error => {
       };
     }
 
+    if (peek === '=' && lexerMatch(lexer, '>', 1)) {
+      const startPunc = lexer.position;
+
+      lexer.position += 2;
+
+      return {
+        kind: 'punc',
+        value: lexer.source.contents.slice(startPunc, lexer.position),
+      };
+    }
+
     // other punc
 
     if (isVibeScriptPunc(peek)) {
@@ -486,6 +497,22 @@ export type VibeScriptOperatorExpression = {
   operator: VibeScriptOperator;
 };
 
+export type VibeScriptArrayLiteralExpression = {
+  array: VibeScriptExpression[];
+};
+
+export type VibeScriptLambdaExpression = {
+  lambda: {
+    body: VibeScriptExpression;
+  };
+};
+
+// parsed only inside [ ... ] “loose lists”
+
+export type VibeScriptNameOrStringExpression = {
+  nameOrString: string;
+};
+
 export type VibeScriptExpression =
   | VibeScriptBooleanExpression
   | VibeScriptNumberExpression
@@ -494,7 +521,10 @@ export type VibeScriptExpression =
   | VibeScriptCallExpression
   | VibeScriptUnaryOperatorExpression
   | VibeScriptBinaryOperatorExpression
-  | VibeScriptOperatorExpression;
+  | VibeScriptOperatorExpression
+  | VibeScriptArrayLiteralExpression
+  | VibeScriptLambdaExpression
+  | VibeScriptNameOrStringExpression;
 
 // statements
 
@@ -885,6 +915,38 @@ const parseType = (parser: Parser<VibeScriptToken>): VibeScriptType | Error => {
   return baseType;
 };
 
+const parseTransform = (
+  parser: Parser<VibeScriptToken>
+): VibeScriptTransform | Error => {
+  if (parserIsEof(parser)) {
+    return new Error('unexpected end of file parsing transform');
+  }
+
+  ///
+
+  const ptr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  const t = parser.tokens[ptr];
+
+  if (t?.kind !== 'text') {
+    return new Error('expected transform keyword');
+  }
+
+  parser.position = ptr;
+
+  ///
+
+  if (t.value === 'takeLast') {
+    return parseTakeLastTransform(parser);
+  }
+
+  if (t.value === 'maxBy') {
+    return parseMaxByTransform(parser);
+  }
+
+  return new Error(`unknown transform '${t.value}'`);
+};
+
 const parseTakeLastTransform = (
   parser: Parser<VibeScriptToken>
 ): VibeScriptTakeLastTransform | Error => {
@@ -1172,13 +1234,14 @@ const parseKeyValueClause = (
   return value;
 };
 
+const BUILTIN_TRANSFORMS: string[] = ['takeLast', 'maxBy'];
+
 const PREAMBLE_START_KEYWORDS: string[] = [
+  ...BUILTIN_TRANSFORMS,
   'expect',
   'thinking',
   'provider',
   'model',
-  'takeLast',
-  'maxBy',
 ] as const;
 
 const isPreambleStartKeyword = (value: string | null | undefined): boolean => {
@@ -1356,20 +1419,8 @@ const parsePreamble = (
       continue;
     }
 
-    if (kw.value === 'takeLast') {
-      const tr = parseTakeLastTransform(parser);
-
-      if (tr instanceof Error) {
-        return tr;
-      }
-
-      transforms.push(tr);
-
-      continue;
-    }
-
-    if (kw.value === 'maxBy') {
-      const tr = parseMaxByTransform(parser);
+    if (kw.value && BUILTIN_TRANSFORMS.includes(kw.value)) {
+      const tr = parseTransform(parser);
 
       if (tr instanceof Error) {
         return tr;
@@ -1832,6 +1883,142 @@ const parseStringLiteral = (
   return new Error('unterminated string literal (eof)');
 };
 
+const parseArrayLiteral = (
+  parser: Parser<VibeScriptToken>
+): VibeScriptArrayLiteralExpression | Error => {
+  const open = parser.tokens[parser.position];
+  if (open?.kind !== 'punc' || open.value !== '[') {
+    return new Error('internal error: expected "["');
+  }
+
+  parser.position += 1; // consume "["
+
+  ///
+
+  const elements: VibeScriptExpression[] = [];
+
+  while (!parserIsEof(parser)) {
+    parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+    //
+
+    const t = parser.tokens[parser.position];
+
+    if (!t) {
+      break;
+    }
+
+    // end
+
+    if (t.kind === 'punc' && t.value === ']') {
+      parser.position += 1; // consume "]"
+
+      return { array: elements };
+    }
+
+    // tolerate stray commas/newlines
+
+    if (t.kind === 'punc' && t.value === ',') {
+      parser.position += 1;
+
+      continue;
+    }
+    if (t.kind === 'newline') {
+      parser.position += 1;
+
+      continue;
+    }
+
+    // quoted string element
+
+    if (t.kind === 'punc' && (t.value === '"' || t.value === "'")) {
+      const s = parseStringLiteral(parser, t.value as '"' | "'");
+
+      if (s instanceof Error) {
+        return s;
+      }
+
+      elements.push(s);
+
+      continue;
+    }
+
+    // “loose element”: consume until newline / "," / "]"
+
+    const parts: string[] = [];
+
+    while (!parserIsEof(parser)) {
+      const x = parser.tokens[parser.position];
+
+      if (!x) {
+        break;
+      }
+
+      if (x.kind === 'newline') {
+        break;
+      }
+
+      if (x.kind === 'punc' && (x.value === ',' || x.value === ']')) {
+        break;
+      }
+
+      parts.push(x.value ?? '');
+
+      parser.position += 1;
+    }
+
+    const raw = parts.join('').trim();
+
+    if (raw.length === 0) {
+      // consume newline if that was the delimiter and continue
+
+      const delim = parser.tokens[parser.position];
+
+      if (delim?.kind === 'newline') {
+        parser.position += 1;
+      }
+
+      continue;
+    }
+
+    // contains spaces => string literal
+
+    if (/\s/.test(raw)) {
+      elements.push({ value: raw } as VibeScriptStringExpression);
+
+      continue;
+    }
+
+    // number
+
+    const asNumber = Number(raw);
+
+    if (!Number.isNaN(asNumber)) {
+      elements.push({ value: asNumber } as VibeScriptNumberExpression);
+
+      continue;
+    }
+
+    // bareword with late-binding semantics
+
+    elements.push({ nameOrString: raw } as VibeScriptNameOrStringExpression);
+
+    // optional delimiter consumption
+
+    const delim = parser.tokens[parser.position];
+
+    if (delim?.kind === 'punc' && delim.value === ',') {
+      parser.position += 1;
+    }
+
+    if (delim?.kind === 'newline') {
+      parser.position += 1;
+    }
+  }
+
+  return new Error('unterminated array literal (missing "]")');
+};
+
 const parseOperand = (
   parser: Parser<VibeScriptToken>,
   exprKind: VibeScriptExpressionKind
@@ -1964,6 +2151,41 @@ const parseOperand = (
     };
   }
 
+  // zero-arg lambda: () => <expr>
+
+  if (expr === null && nextToken.kind === 'punc' && nextToken.value === '(') {
+    const openPos = parser.position;
+
+    const closePos = skipWhitespaceOrNewlines(parser.tokens, openPos + 1);
+
+    const closeTok = parser.tokens[closePos];
+
+    if (closeTok?.kind === 'punc' && closeTok.value === ')') {
+      const arrowPos = skipWhitespaceOrNewlines(parser.tokens, closePos + 1);
+
+      const arrowTok = parser.tokens[arrowPos];
+
+      if (arrowTok?.kind === 'punc' && arrowTok.value === '=>') {
+        // consume "(" ... ")" "=>"
+
+        parser.position = arrowPos + 1;
+
+        const body = parseExpression(
+          parser,
+          VibeScriptExpressionKind.WithAssignments
+        );
+
+        if (body instanceof Error) {
+          return body;
+        }
+
+        expr = {
+          lambda: { body },
+        } as VibeScriptLambdaExpression;
+      }
+    }
+  }
+
   // parenthesized expression
 
   if (expr === null && nextToken.kind === 'punc' && nextToken.value === '(') {
@@ -1996,6 +2218,18 @@ const parseOperand = (
     }
 
     expr = _expr;
+  }
+
+  // array literal
+
+  if (expr === null && nextToken.kind === 'punc' && nextToken.value === '[') {
+    const arr = parseArrayLiteral(parser);
+
+    if (arr instanceof Error) {
+      return arr;
+    }
+
+    expr = arr;
   }
 
   // number literal (so 34, 2, 4 parse as numbers, not vars)
@@ -3328,6 +3562,18 @@ export type CheckedVibeScriptUnknownExpression = {
   typeId: number;
 };
 
+export type CheckedVibeScriptArrayExpression = {
+  kind: 'array';
+  elements: CheckedVibeScriptExpression[];
+  typeId: number;
+};
+
+export type CheckedVibeScriptLambdaExpression = {
+  kind: 'lambda';
+  body: CheckedVibeScriptExpression;
+  typeId: number;
+};
+
 export type CheckedVibeScriptExpression =
   | CheckedVibeScriptBooleanExpression
   | CheckedVibeScriptNumberExpression
@@ -3336,6 +3582,8 @@ export type CheckedVibeScriptExpression =
   | CheckedVibeScriptCallExpression
   | CheckedVibeScriptUnaryExpression
   | CheckedVibeScriptBinaryExpression
+  | CheckedVibeScriptArrayExpression
+  | CheckedVibeScriptLambdaExpression
   | CheckedVibeScriptUnknownExpression;
 
 export type VibeScriptUnknownTypeInfo = {
@@ -4153,8 +4401,75 @@ const typeCheckCall = (
       break;
     }
 
+    case 'sample': {
+      if (checkedArgs.length !== 1) {
+        return new Error('sample(...) takes 1 argument');
+      }
+
+      const a0 = checkedArgs[0];
+
+      if (!a0) {
+        return new Error('internal error: missing arg');
+      }
+
+      // if we know it's an array, return its element type
+
+      let ret = UnknownTypeId;
+
+      const t0 = context.types[a0.typeId];
+
+      if (t0?.kind === 'array') {
+        ret = t0.innerTypeId;
+      } else if (a0.typeId !== UnknownTypeId) {
+        // be strict-ish: sample expects array-like
+        return new Error(
+          `sample(...) expects array, got '${typeNameForTypeId(context, a0.typeId)}'`
+        );
+      }
+
+      const unifiedTypeId = unifyWithType(context, ret, typeHint);
+
+      if (unifiedTypeId instanceof Error) {
+        return unifiedTypeId;
+      }
+
+      return {
+        kind: 'call',
+        name,
+        args: checkedArgs,
+        typeId: unifiedTypeId,
+      };
+    }
+
     default: {
-      return new Error(`unknown function '${name}'`);
+      // return new Error(`unknown function '${name}'`);
+
+      const v = findVarInScope(context, scopeId, name);
+
+      if (!v) {
+        return new Error(`unknown function '${name}'`);
+      }
+
+      // minimal callable rule: only allow calls on unknown-typed vars
+
+      if (v.typeId !== UnknownTypeId) {
+        return new Error(
+          `'${name}' is not callable (type '${typeNameForTypeId(context, v.typeId)}')`
+        );
+      }
+
+      const unifiedTypeId = unifyWithType(context, UnknownTypeId, typeHint);
+
+      if (unifiedTypeId instanceof Error) {
+        return unifiedTypeId;
+      }
+
+      return {
+        kind: 'call',
+        name,
+        args: checkedArgs,
+        typeId: unifiedTypeId,
+      };
     }
   }
 
@@ -4449,6 +4764,114 @@ const typeCheckExpression = (
       value: expr.value,
       typeId: unifiedTypeId,
     };
+  }
+
+  // array literal
+
+  if ('array' in expr) {
+    const elems: CheckedVibeScriptExpression[] = [];
+
+    for (const e of expr.array) {
+      const ce = typeCheckExpression(e, scopeId, context, null);
+
+      if (ce instanceof Error) {
+        return ce;
+      }
+
+      elems.push(ce);
+    }
+
+    // infer a simple inner type (best-effort)
+
+    let innerTypeId = UnknownTypeId;
+
+    for (const e of elems) {
+      if (e.typeId === UnknownTypeId) {
+        continue;
+      }
+
+      if (innerTypeId === UnknownTypeId) {
+        innerTypeId = e.typeId;
+
+        continue;
+      }
+
+      if (innerTypeId !== e.typeId) {
+        innerTypeId = UnknownTypeId;
+
+        break;
+      }
+    }
+
+    const arrayTypeId = findOrAddTypeId(context, {
+      kind: 'array',
+      innerTypeId,
+    });
+
+    const unifiedTypeId = unifyWithType(context, arrayTypeId, typeHint);
+
+    if (unifiedTypeId instanceof Error) {
+      return unifiedTypeId;
+    }
+
+    return {
+      kind: 'array',
+      elements: elems,
+      typeId: unifiedTypeId,
+    };
+  }
+
+  // lambda literal
+  if ('lambda' in expr) {
+    const body = typeCheckExpression(expr.lambda.body, scopeId, context, null);
+
+    if (body instanceof Error) {
+      return body;
+    }
+
+    // minimal: lambdas have unknown type (no function types yet)
+
+    const unifiedTypeId = unifyWithType(context, UnknownTypeId, typeHint);
+
+    if (unifiedTypeId instanceof Error) {
+      return unifiedTypeId;
+    }
+
+    return {
+      kind: 'lambda',
+      body,
+      typeId: unifiedTypeId,
+    };
+  }
+
+  // name-or-string (late bound)
+
+  if ('nameOrString' in expr) {
+    const name = expr.nameOrString;
+
+    if (typeof name !== 'string' || name.length === 0) {
+      return new Error('invalid nameOrString');
+    }
+
+    const v = findVarInScope(context, scopeId, name);
+
+    if (v) {
+      const unifiedTypeId = unifyWithType(context, v.typeId, typeHint);
+
+      if (unifiedTypeId instanceof Error) {
+        return unifiedTypeId;
+      }
+
+      return { kind: 'var', name, typeId: unifiedTypeId };
+    }
+
+    const unifiedTypeId = unifyWithType(context, StringTypeId, typeHint);
+
+    if (unifiedTypeId instanceof Error) {
+      return unifiedTypeId;
+    }
+
+    return { kind: 'string', value: name, typeId: unifiedTypeId };
   }
 
   // variable

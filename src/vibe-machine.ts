@@ -910,6 +910,28 @@ const evalExpression = (
     return expr.value;
   }
 
+  if (expr.kind === 'array') {
+    const out: unknown[] = [];
+
+    for (const e of expr.elements) {
+      const v = evalExpression(e, env, context);
+
+      if (v instanceof Error) {
+        return v;
+      }
+
+      out.push(v);
+    }
+
+    return out;
+  }
+
+  // lambda
+
+  if (expr.kind === 'lambda') {
+    return () => evalExpression(expr.body, env, context);
+  }
+
   // var
 
   if (expr.kind === 'var') {
@@ -934,6 +956,8 @@ const evalExpression = (
 
       args.push(result);
     }
+
+    // builtins
 
     if (expr.name === 'random') {
       if (args.length !== 0) {
@@ -983,6 +1007,39 @@ const evalExpression = (
       }
 
       return Math.round(n);
+    }
+
+    if (expr.name === 'sample') {
+      if (args.length !== 1) {
+        return new Error('sample(...) takes 1 argument');
+      }
+
+      const a0 = args[0];
+
+      if (!Array.isArray(a0)) {
+        return new Error('sample(...) expects an array');
+      }
+
+      if (a0.length === 0) {
+        return null;
+      }
+
+      const i = Math.floor(Math.random() * a0.length);
+
+      return a0[i];
+    }
+
+    // maybe user-defined
+
+    const maybeFn = env[expr.name];
+
+    if (typeof maybeFn === 'function') {
+      try {
+        const fn = maybeFn as (...xs: unknown[]) => unknown;
+        return fn(...args);
+      } catch (e) {
+        return e instanceof Error ? e : new Error(String(e));
+      }
     }
 
     return new Error(`unknown function '${expr.name}' at runtime`);

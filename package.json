@@ -9,6 +9,7 @@
     "type-check": "ts-node src/type-check.ts",
     "output": "ts-node src/output.ts",
     "archive": "ts-node src/archive.ts",
+    "tests": "ts-node src/tests.ts",
     "build": "tsc"
   },
   "dependencies": {
