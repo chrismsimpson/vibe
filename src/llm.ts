@@ -174,19 +174,33 @@ export const completeChatModels = async ({
 
   const _models = isFunc ? models() : models;
 
+  let lastErr: Error | null = null;
+
   for (const model of _models) {
+    if (isFunc) {
+      console.log('Trying model:', model);
+    }
+
     try {
-      if (isFunc) {
-        console.log('Trying model:', model);
+      const r = await completeChatModel({ keys, model, messages, thinking });
+
+      if (!(r instanceof Error)) {
+        return r;
       }
 
-      return await completeChatModel({ keys, model, messages, thinking });
+      lastErr = r;
+
+      console.error(r);
     } catch (error) {
-      console.error(error);
+      const e = error instanceof Error ? error : new Error(String(error));
+
+      lastErr = e;
+
+      console.error(e);
     }
   }
 
-  return new Error('Failed to complete chat');
+  return lastErr ?? new Error('Failed to complete chat');
 };
 
 export const getModel = ({
@@ -195,17 +209,17 @@ export const getModel = ({
 }: {
   thinking?: LLMThinking;
   provider?: LLMProvider;
-}): LLMModel | Error => {
+}): [LLMProvider, LLMThinking, LLMModel] | Error => {
   const _provider = provider ?? sample(llmProviders);
 
   const _thinking = thinking ?? 'medium'; // 'medium' is our default so we get decent quality outputs but we're not being exorbitant
 
   if (_provider === 'gemini') {
-    return getGeminiModel(_thinking);
+    return [_provider, _thinking, getGeminiModel(_thinking)];
   }
 
   if (_provider === 'openai') {
-    return getOpenAIModel(_thinking);
+    return [_provider, _thinking, getOpenAIModel(_thinking)];
   }
 
   return new Error(`Unknown provider: ${_provider}`);
@@ -235,19 +249,41 @@ export const completeChat = async (
     });
   }
 
-  const model = getModel({
+  const modelResult = getModel({
     thinking: props.thinking,
     provider: props.provider,
   });
 
-  if (model instanceof Error) {
-    return model;
+  if (modelResult instanceof Error) {
+    return modelResult;
   }
+
+  const [, resolvedThinking, model] = modelResult;
 
   return completeChatModel({
     keys: props.keys,
     model,
     messages: props.messages,
-    thinking: props.thinking,
+    thinking: resolvedThinking,
   });
+};
+
+export const isLLMModel = (m: string): m is LLMModel => {
+  return isGeminiLLMModel(m) || isOpenAILLMModel(m);
+};
+
+export const isLLMProvider = (p: string): p is LLMProvider => {
+  return llmProviders.includes(p as LLMProvider);
+};
+
+export const inferProviderForModel = (m: LLMModel): LLMProvider | null => {
+  if (isGeminiLLMModel(m)) {
+    return 'gemini';
+  }
+
+  if (isOpenAILLMModel(m)) {
+    return 'openai';
+  }
+
+  return null;
 };

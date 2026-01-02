@@ -10,6 +10,13 @@ import {
 import * as fsSync from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { llmThinkingLevels, type LLMThinking } from './llm-base';
+import {
+  isLLMModel,
+  isLLMProvider,
+  type LLMModel,
+  type LLMProvider,
+} from './llm';
 
 // lexing
 
@@ -31,6 +38,7 @@ const isVibeScriptPunc = (char: string): boolean => {
     char === ',' ||
     char === '"' ||
     char === "'" ||
+    char === '`' ||
     char === ':' ||
     char === ';' ||
     char === '.' ||
@@ -380,12 +388,18 @@ export type VibeScriptTransform =
 
 export type VibeScriptPreambleBlock = {
   expects?: VibeScriptType | null;
+  thinking?: string | null;
+  provider?: string | null;
+  model?: string | null;
   transforms?: VibeScriptTransform[] | null;
 };
 
 export type VibeScriptStep = {
   step: string;
   expects?: VibeScriptType | null;
+  thinking?: string | null;
+  provider?: string | null;
+  model?: string | null;
   transforms?: VibeScriptTransform[] | null;
   outputName?: string | null;
   inputName?: string | null;
@@ -1094,6 +1108,86 @@ const parseMaxByTransform = (
 
 // parse preamble
 
+const consumeClauseValue = (parser: Parser<VibeScriptToken>): string => {
+  const parts: string[] = [];
+
+  while (!parserIsEof(parser)) {
+    const t = parser.tokens[parser.position];
+
+    if (!t) {
+      break;
+    }
+
+    if (t.kind === 'newline') {
+      break;
+    }
+
+    if (t.kind === 'punc' && (t.value === ';' || t.value === '-->')) {
+      break; // do not consume delimiter
+    }
+
+    if (t.value) {
+      parts.push(t.value);
+    }
+
+    parser.position += 1;
+  }
+
+  return parts.join('').trim();
+};
+
+const parseKeyValueClause = (
+  parser: Parser<VibeScriptToken>,
+  key: 'thinking' | 'provider' | 'model'
+): string | Error => {
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  const kw = parser.tokens[parser.position];
+
+  if (kw?.kind !== 'text' || kw.value !== key) {
+    return new Error(`internal error: expected '${key}' keyword`);
+  }
+
+  parser.position += 1;
+
+  const colonPtr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  const colonTok = parser.tokens[colonPtr];
+
+  if (colonTok?.kind !== 'punc' || colonTok.value !== ':') {
+    return new Error(`expected ':' after '${key}'`);
+  }
+
+  parser.position = colonPtr + 1;
+
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  const value = consumeClauseValue(parser);
+
+  if (value.length === 0) {
+    return new Error(`expected value for '${key}:'`);
+  }
+
+  return value;
+};
+
+const PREAMBLE_START_KEYWORDS: string[] = [
+  'expect',
+  'thinking',
+  'provider',
+  'model',
+  'takeLast',
+  'maxBy',
+] as const;
+
+const isPreambleStartKeyword = (value: string | null | undefined): boolean => {
+  if (!value) {
+    return false;
+  }
+
+  return PREAMBLE_START_KEYWORDS.includes(value);
+};
+
 const parsePreamble = (
   parser: Parser<VibeScriptToken>,
   options?: {
@@ -1104,78 +1198,13 @@ const parsePreamble = (
     return new Error('unexpected end of file parsing expects statement');
   }
 
-  ///
-
   const stopOnUnknownClause = options?.stopOnUnknownClause ?? false;
 
-  ///
-
-  const nextPtr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
-
-  const nextToken = parser.tokens[nextPtr];
-
-  if (nextToken === undefined) {
-    return new Error('unexpected undefined token parsing vibe script preamble');
-  }
-
-  ///
-
   let expects: VibeScriptType | null = null;
-
-  ///
-
-  if (nextToken.kind === 'text' && nextToken.value === 'expect') {
-    parser.position = nextPtr + 1; // consume 'expect' token
-
-    const expectColonPtr = skipWhitespaceOrNewlines(
-      parser.tokens,
-      parser.position
-    );
-
-    const expectColonToken = parser.tokens[expectColonPtr];
-
-    if (expectColonToken === undefined) {
-      return new Error(
-        'unexpected undefined token parsing expects colon in vibe script preamble'
-      );
-    }
-
-    if (expectColonToken.kind !== 'punc' || expectColonToken.value !== ':') {
-      return new Error(
-        `expected ':' token after 'expect' in vibe script preamble, got '${expectColonToken.value}'`
-      );
-    }
-
-    parser.position = expectColonPtr + 1; // consume ':' token
-
-    ///
-
-    parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
-
-    ///
-
-    const expectType = parseType(parser);
-
-    if (expectType instanceof Error) {
-      return expectType;
-    }
-
-    expects = expectType;
-  }
-
-  ///
-
+  let thinking: string | null = null;
+  let provider: string | null = null;
+  let model: string | null = null;
   const transforms: VibeScriptTransform[] = [];
-
-  // Parse optional clauses (transforms) up to '-->' without consuming '-->' itself
-  //
-  // Supported:
-  //   ; takeLast
-  //   ; takeLast(N)
-  //   ; maxBy(key)
-  //
-  // When called from parseStep(...), we must NOT consume non-transform
-  // step-level clauses (like `; named title`), so we optionally stop
 
   while (!parserIsEof(parser)) {
     const ptr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
@@ -1186,74 +1215,192 @@ const parsePreamble = (
       break;
     }
 
+    // stop before the end-of-comment delimiter
+
     if (t.kind === 'punc' && t.value === '-->') {
       parser.position = ptr; // do not consume '-->'
 
       break;
     }
 
-    if (t.kind === 'punc' && t.value === ';') {
-      const clausePtr = ptr;
+    // consume optional clause separator
 
+    if (t.kind === 'punc' && t.value === ';') {
       parser.position = ptr + 1;
 
-      ///
+      const clauseStartPtr = skipWhitespaceOrNewlines(
+        parser.tokens,
+        parser.position
+      );
+
+      parser.position = clauseStartPtr;
+    } else {
+      parser.position = ptr;
+    }
+
+    const kw = parser.tokens[parser.position];
+
+    if (!kw || kw.kind !== 'text') {
+      // iIf we are in a step, we should stop at unknown clauses,
+      // otherwise, we might be at the end of the preamble
+
+      if (stopOnUnknownClause) {
+        break;
+      }
+
+      // tf not a text keyword, it's not a clause we can parse here.
+
+      const nextPtr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+      if (parser.tokens[nextPtr]?.value === '-->') {
+        parser.position = nextPtr;
+
+        break;
+      }
+
+      // tolerate and consume one token to prevent infinite loops on malformed input
+
+      parser.position += 1;
+
+      continue;
+    }
+
+    if (kw.value === 'expect') {
+      parser.position += 1; // consume 'expect' token
+
+      const expectColonPtr = skipWhitespaceOrNewlines(
+        parser.tokens,
+        parser.position
+      );
+
+      const expectColonToken = parser.tokens[expectColonPtr];
+
+      if (
+        !expectColonToken ||
+        expectColonToken.kind !== 'punc' ||
+        expectColonToken.value !== ':'
+      ) {
+        return new Error(
+          `expected ':' token after 'expect', got '${expectColonToken?.value ?? 'nothing'}'`
+        );
+      }
+
+      parser.position = expectColonPtr + 1; // consume ':' token
 
       parser.position = skipWhitespaceOrNewlines(
         parser.tokens,
         parser.position
       );
 
-      const kw = parser.tokens[parser.position];
+      const expectType = parseType(parser);
 
-      if (kw?.kind === 'text' && kw.value === 'takeLast') {
-        const tr = parseTakeLastTransform(parser);
-
-        if (tr instanceof Error) {
-          return tr;
-        }
-
-        transforms.push(tr);
-
-        continue;
+      if (expectType instanceof Error) {
+        return expectType;
       }
 
-      if (kw?.kind === 'text' && kw.value === 'maxBy') {
-        const tr = parseMaxByTransform(parser);
-
-        if (tr instanceof Error) {
-          return tr;
-        }
-
-        transforms.push(tr);
-
-        continue;
+      if (expects !== null) {
+        return new Error('expects already set in this block');
       }
 
-      // In step contexts: stop before unknown clauses so parseStep can handle them.
-      if (stopOnUnknownClause) {
-        parser.position = clausePtr;
-
-        break;
-      }
-
-      // tolerate unknown clause head (top-level expects extensibility)
-      if (kw) {
-        parser.position += 1;
-
-        continue;
-      }
+      expects = expectType;
 
       continue;
     }
 
-    parser.position = ptr + 1;
-  }
+    if (kw.value === 'thinking') {
+      const v = parseKeyValueClause(parser, 'thinking');
 
-  ///
+      if (v instanceof Error) {
+        return v;
+      }
+
+      if (thinking !== null) {
+        return new Error('thinking already set in this expect block');
+      }
+
+      thinking = v;
+
+      continue;
+    }
+
+    if (kw.value === 'provider') {
+      const v = parseKeyValueClause(parser, 'provider');
+
+      if (v instanceof Error) {
+        return v;
+      }
+
+      if (provider !== null) {
+        return new Error('provider already set in this expect block');
+      }
+
+      provider = v;
+
+      continue;
+    }
+
+    if (kw.value === 'model') {
+      const v = parseKeyValueClause(parser, 'model');
+
+      if (v instanceof Error) {
+        return v;
+      }
+
+      if (model !== null) {
+        return new Error('model already set in this expect block');
+      }
+
+      model = v;
+
+      continue;
+    }
+
+    if (kw.value === 'takeLast') {
+      const tr = parseTakeLastTransform(parser);
+
+      if (tr instanceof Error) {
+        return tr;
+      }
+
+      transforms.push(tr);
+
+      continue;
+    }
+
+    if (kw.value === 'maxBy') {
+      const tr = parseMaxByTransform(parser);
+
+      if (tr instanceof Error) {
+        return tr;
+      }
+
+      transforms.push(tr);
+
+      continue;
+    }
+
+    // in step contexts: stop before unknown clauses so parseStep can handle them
+
+    if (stopOnUnknownClause) {
+      // we already advanced the parser position, so we need to rewind to before the keyword
+
+      parser.position = ptr;
+
+      break;
+    }
+
+    // tolerate unknown clause head by consuming it and its value
+
+    parser.position += 1;
+
+    consumeClauseValue(parser);
+  }
 
   return {
     expects,
+    thinking,
+    provider,
+    model,
     transforms: transforms.length > 0 ? transforms : null,
   };
 };
@@ -1332,20 +1479,17 @@ const parseStep = (parser: Parser<VibeScriptToken>): VibeScriptStep | Error => {
 
   let expects: VibeScriptType | null = null;
 
+  let thinking: string | null = null;
+  let provider: string | null = null;
+  let model: string | null = null;
   let transforms: VibeScriptTransform[] | null = null;
 
   let outputName: string | null = null;
 
   let inputName: string | null = null;
 
-  // Consume optional clauses up to '-->' without consuming '-->' itself.
-  // Supported:
-  //
-  //   ; expects: <type> ; takeLast | takeLast(N) | maxBy(key)
-  //   ; named <identifier>
-  //   ; from <identifier>
-  //
-  // Everything else is tolerated/ignored for future extensibility.
+  // consume optional clauses up to '-->' without consuming '-->' itself
+
   while (!parserIsEof(parser)) {
     const ptr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
 
@@ -1388,9 +1532,95 @@ const parseStep = (parser: Parser<VibeScriptToken>): VibeScriptStep | Error => {
           return preamble;
         }
 
-        expects = preamble.expects ?? null;
+        // merge preamble values without allowing silent overrides.
 
-        transforms = preamble.transforms ?? null;
+        if (preamble.expects !== null) {
+          if (expects !== null) {
+            return new Error('step expects already set');
+          }
+
+          expects = preamble.expects ?? null;
+        }
+
+        if (preamble.thinking !== null) {
+          if (thinking !== null) {
+            return new Error('step thinking already set');
+          }
+
+          thinking = preamble.thinking ?? null;
+        }
+
+        if (preamble.provider !== null) {
+          if (provider !== null) {
+            return new Error('step provider already set');
+          }
+
+          provider = preamble.provider ?? null;
+        }
+
+        if (preamble.model !== null) {
+          if (model !== null) {
+            return new Error('step model already set');
+          }
+
+          model = preamble.model ?? null;
+        }
+
+        if (preamble.transforms !== null) {
+          if (transforms !== null) {
+            return new Error('step transforms already set');
+          }
+
+          transforms = preamble.transforms ?? null;
+        }
+
+        continue;
+      }
+
+      if (kw.value === 'thinking') {
+        const v = parseKeyValueClause(parser, 'thinking');
+
+        if (v instanceof Error) {
+          return v;
+        }
+
+        if (thinking !== null) {
+          return new Error('step thinking already set');
+        }
+
+        thinking = v;
+
+        continue;
+      }
+
+      if (kw.value === 'provider') {
+        const v = parseKeyValueClause(parser, 'provider');
+
+        if (v instanceof Error) {
+          return v;
+        }
+
+        if (provider !== null) {
+          return new Error('step provider already set');
+        }
+
+        provider = v;
+
+        continue;
+      }
+
+      if (kw.value === 'model') {
+        const v = parseKeyValueClause(parser, 'model');
+
+        if (v instanceof Error) {
+          return v;
+        }
+
+        if (model !== null) {
+          return new Error('step model already set');
+        }
+
+        model = v;
 
         continue;
       }
@@ -1462,6 +1692,7 @@ const parseStep = (parser: Parser<VibeScriptToken>): VibeScriptStep | Error => {
       }
 
       // tolerate unknown clause
+
       parser.position += 1;
 
       continue;
@@ -1476,11 +1707,12 @@ const parseStep = (parser: Parser<VibeScriptToken>): VibeScriptStep | Error => {
     );
   }
 
-  ///
-
   return {
     step: nameToken.value,
     expects,
+    thinking,
+    provider,
+    model,
     transforms,
     outputName,
     inputName,
@@ -1503,6 +1735,34 @@ const parseStringLiteral = (
 
   let acc = '';
 
+  let escaped = false;
+
+  const decodeEscape = (ch: string): string => {
+    switch (ch) {
+      case 'n':
+        return '\n';
+
+      case 'r':
+        return '\r';
+
+      case 't':
+        return '\t';
+
+      case '\\':
+        return '\\';
+
+      case '"':
+        return '"';
+
+      case "'":
+        return "'";
+
+      default:
+        // permissive: "\x" => "x"
+        return ch;
+    }
+  };
+
   while (!parserIsEof(parser)) {
     const t = parser.tokens[parser.position];
 
@@ -1514,15 +1774,58 @@ const parseStringLiteral = (
       return new Error('unterminated string literal (newline)');
     }
 
-    if (t.kind === 'punc' && t.value === quote) {
+    // start escape
+    if (!escaped && t.kind === 'punc' && t.value === '\\') {
+      escaped = true;
+
+      parser.position += 1;
+
+      continue;
+    }
+
+    // end quote (only if not escaped)
+    if (!escaped && t.kind === 'punc' && t.value === quote) {
       parser.position += 1; // consume closing quote
 
       return { value: acc };
     }
 
-    acc += t.value ?? '';
+    const v = t.value ?? '';
+
+    if (escaped) {
+      if (v.length === 0) {
+        escaped = false;
+
+        parser.position += 1;
+
+        continue;
+      }
+
+      // consume exactly one escape char from this token,
+      // and then append the remainder (so "\nWorld" works)
+
+      const head = v[0] as string;
+
+      const tail = v.slice(1);
+
+      acc += decodeEscape(head);
+
+      acc += tail;
+
+      escaped = false;
+
+      parser.position += 1;
+
+      continue;
+    }
+
+    acc += v;
 
     parser.position += 1;
+  }
+
+  if (escaped) {
+    return new Error('unterminated string literal (eof after escape)');
   }
 
   return new Error('unterminated string literal (eof)');
@@ -1825,11 +2128,7 @@ const parseOperator = (
     return null;
   }
 
-  ///
-
   parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
-
-  ///
 
   const nextToken = parser.tokens[parser.position];
 
@@ -1847,8 +2146,6 @@ const parseOperator = (
   ) {
     return null;
   }
-
-  ///
 
   if (nextToken.kind === 'punc' && nextToken.value === '+') {
     parser.position += 1;
@@ -1903,6 +2200,23 @@ const parseOperator = (
 
     return {
       operator: VibeScriptBinaryOperator.LogicalOr,
+    } as VibeScriptOperatorExpression;
+  }
+
+  // accept strict equality operators as aliases
+  if (nextToken.kind === 'punc' && nextToken.value === '===') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.Equal,
+    } as VibeScriptOperatorExpression;
+  }
+
+  if (nextToken.kind === 'punc' && nextToken.value === '!==') {
+    parser.position += 1;
+
+    return {
+      operator: VibeScriptBinaryOperator.NotEqual,
     } as VibeScriptOperatorExpression;
   }
 
@@ -2368,11 +2682,7 @@ const consumePath = (parser: Parser<VibeScriptToken>): string | Error => {
     return new Error('unexpected end of file parsing vibe script path');
   }
 
-  ///
-
-  ///
-
-  const path = [];
+  const parts: string[] = [];
 
   while (!parserIsEof(parser)) {
     const t = parser.tokens[parser.position];
@@ -2381,18 +2691,26 @@ const consumePath = (parser: Parser<VibeScriptToken>): string | Error => {
       break;
     }
 
-    if (t.kind === 'newline') {
+    // stop at token boundaries that separate paths
+
+    if (t.kind === 'whitespace' || t.kind === 'newline') {
+      break;
+    }
+
+    // stop before end-of-comment so caller can handle it
+
+    if (t.kind === 'punc' && t.value === '-->') {
       break;
     }
 
     if (t.value) {
-      path.push(t.value);
+      parts.push(t.value);
     }
 
     parser.position += 1;
   }
 
-  return path.join('');
+  return parts.join('');
 };
 
 const parseFileIncludeStatement = (
@@ -2503,7 +2821,7 @@ const parseStatement = (
 
   // preamble
 
-  if (nextToken.kind === 'text' && nextToken.value === 'expect') {
+  if (nextToken.kind === 'text' && isPreambleStartKeyword(nextToken.value)) {
     return parsePreamble(parser);
   }
 
@@ -2533,7 +2851,7 @@ const parseStatement = (
 const preceedsStatement = (first: VibeScriptToken): boolean => {
   return (
     (first.kind === 'punc' && first.value === '~') ||
-    (first.kind === 'text' && first.value === 'expect') ||
+    (first.kind === 'text' && isPreambleStartKeyword(first.value)) ||
     (first.kind === 'text' && first.value === 'let') ||
     (first.kind === 'text' && first.value === 'step')
   );
@@ -2728,13 +3046,15 @@ const parseTextBlock = (
     return new Error('unexpected end of file parsing vibe script block');
   }
 
-  ///
-
   const parts: VibeScriptTextLiteralPart[] = [];
 
   let quasis = '';
 
   let tokenCount = 0;
+
+  // track inline markdown code spans delimited by single backticks
+
+  let inInlineCode = false;
 
   while (!parserIsEof(parser)) {
     const t = parser.tokens[parser.position];
@@ -2743,10 +3063,33 @@ const parseTextBlock = (
       break;
     }
 
+    // toggle inline-code mode on backticks, but always treat
+    // the backtick itself as literal text (part of quasis)
+
+    if (t.kind === 'punc' && t.value === '`') {
+      inInlineCode = !inInlineCode;
+
+      quasis += t.value ?? '';
+
+      parser.position += 1;
+
+      tokenCount += 1;
+
+      // continue normal accumulation; interpolation
+      // is now disabled until we close `
+
+      continue;
+    }
+
     // interpolation start: `${`
+    // Only allowed when:
+    // - interpolation is enabled for this block
+    // - we are NOT inside an inline code span
+    // - we have the existing `$` + `{` pattern
 
     if (
       options?.disableInterpolation !== true &&
+      !inInlineCode &&
       t.kind === 'text' &&
       t.value != null &&
       t.value.endsWith('$')
@@ -2761,14 +3104,13 @@ const parseTextBlock = (
         }
 
         // consume the `$...` token + the `{`
+
         parser.position += 2;
 
         tokenCount += 2;
 
         if (quasis.length > 0) {
-          parts.push({
-            quasis,
-          } as VibeScriptTextLiteralQuasis);
+          parts.push({ quasis } as VibeScriptTextLiteralQuasis);
 
           quasis = '';
         }
@@ -2805,15 +3147,14 @@ const parseTextBlock = (
 
         tokenCount += parser.position - closeStartPos;
 
-        parts.push({
-          expr,
-        } as VibeScriptTextLiteralExpression);
+        parts.push({ expr } as VibeScriptTextLiteralExpression);
 
         continue;
       }
     }
 
     // normal text accumulation
+
     quasis += t.value ?? '';
 
     parser.position += 1;
@@ -2830,9 +3171,7 @@ const parseTextBlock = (
   }
 
   if (quasis.length > 0) {
-    parts.push({
-      quasis,
-    } as VibeScriptTextLiteralQuasis);
+    parts.push({ quasis } as VibeScriptTextLiteralQuasis);
   }
 
   return {
@@ -2859,30 +3198,6 @@ const parseBlock = (
 
   return parseTextBlock(parser);
 };
-
-// const parseBlocks = (
-//   parser: Parser<VibeScriptToken>
-// ): VibeScriptBlock[] | Error => {
-//   if (parserIsEof(parser)) {
-//     return [];
-//   }
-
-//   ///
-
-//   const blocks: VibeScriptBlock[] = [];
-
-//   while (!parserIsEof(parser)) {
-//     const block = parseBlock(parser);
-
-//     if (block instanceof Error) {
-//       return block;
-//     }
-
-//     blocks.push(block);
-//   }
-
-//   return blocks;
-// };
 
 const parseBlocks = (
   parser: Parser<VibeScriptToken>
@@ -2959,8 +3274,6 @@ export const parseVibeScript = (
 };
 
 // type checker
-
-// export type
 
 export type CheckedVibeScriptBooleanExpression = {
   kind: 'boolean';
@@ -3079,6 +3392,9 @@ export type CheckedVibeScriptPreambleBlock = {
   kind: 'preamble';
   typeId: number; // raw expected type id (what the LLM will ideally output)
   outputTypeId: number; // type id after transforms
+  thinking: LLMThinking | null;
+  provider: LLMProvider | null;
+  model: LLMModel | null;
   transforms: VibeScriptTransform[] | null;
   preamble: VibeScriptPreambleBlock;
 };
@@ -3097,6 +3413,9 @@ export type CheckedVibeScriptStepBlock = {
   name: string;
   expectsTypeId: number; // raw expects type id (what the LLM must output)
   outputTypeId: number; // type id after transforms
+  thinking: LLMThinking | null;
+  provider: LLMProvider | null;
+  model: LLMModel | null;
   transforms: VibeScriptTransform[] | null;
   step: VibeScriptStep;
 };
@@ -3143,8 +3462,11 @@ export type CheckedVibeScript = {
   blocks: CheckedVibeScriptBlock[];
   steps: CheckedVibeScriptStep[];
   expectsTypeId: number | null; // raw (null when using steps)
-  expectsOutputTypeId: number | null; // transformed (null when using steps)
-  expectsTransforms: VibeScriptTransform[] | null; // null when using steps / none
+  outputTypeId: number | null; // transformed (null when using steps)
+  defaultThinking: LLMThinking | null;
+  defaultProvider: LLMProvider | null;
+  defaultModel: LLMModel | null;
+  transforms: VibeScriptTransform[] | null; // null when using steps / none
   context: VibeScriptContext;
 };
 
@@ -3176,6 +3498,93 @@ const createContext = (): VibeScriptContext => {
     types,
     scopes,
   };
+};
+
+type CheckedLLMConfig = {
+  thinking: LLMThinking | null;
+  provider: LLMProvider | null;
+  model: LLMModel | null;
+};
+
+const thinkingLevelSet = new Set<string>(llmThinkingLevels);
+
+const typeCheckLLMThinkingString = (raw: string): LLMThinking | Error => {
+  const s = raw.trim();
+
+  if (thinkingLevelSet.has(s)) {
+    return s as LLMThinking;
+  }
+
+  const n = Number(s);
+
+  if (Number.isInteger(n)) {
+    return n;
+  }
+
+  return new Error(
+    `invalid thinking value '${raw}' (expected level or integer)`
+  );
+};
+
+const typeCheckLLMConfig = (cfg: {
+  thinking?: string | null;
+  provider?: string | null;
+  model?: string | null;
+}): CheckedLLMConfig | Error => {
+  const thinkingRaw = cfg.thinking ?? null;
+  const providerRaw = cfg.provider ?? null;
+  const modelRaw = cfg.model ?? null;
+
+  if (providerRaw !== null && modelRaw !== null) {
+    return new Error(
+      "cannot specify both 'provider' and 'model' in the same expect/step"
+    );
+  }
+
+  const thinking =
+    thinkingRaw === null ? null : typeCheckLLMThinkingString(thinkingRaw);
+
+  if (thinking instanceof Error) {
+    return thinking;
+  }
+
+  const provider = (() => {
+    if (providerRaw === null) {
+      return null;
+    }
+
+    const p = providerRaw.trim();
+
+    if (!isLLMProvider(p)) {
+      return new Error(`invalid provider '${providerRaw}'`);
+    }
+
+    return p;
+  })();
+
+  if (provider instanceof Error) {
+    return provider;
+  }
+
+  const model = (() => {
+    if (modelRaw === null) {
+      return null;
+    }
+
+    const m = modelRaw.trim();
+
+    if (!isLLMModel(m)) {
+      return new Error(`invalid model '${modelRaw}'`);
+    }
+
+    return m;
+  })();
+
+  if (model instanceof Error) {
+    return model;
+  }
+
+  return { thinking, provider, model };
 };
 
 export const UnknownTypeId = 0;
@@ -3317,8 +3726,6 @@ const typeCheckTransformsForTypeId = (
   rawTypeId: number,
   transforms: VibeScriptTransform[] | null
 ): number | Error => {
-  // let error: Error | null = null;
-
   let currentTypeId = rawTypeId;
 
   for (const tr of transforms ?? []) {
@@ -3343,12 +3750,12 @@ const typeCheckTransformsForTypeId = (
         }
 
         // takeLast(N) returns an array (same type)
-        currentTypeId = rawTypeId;
 
         continue;
       }
 
       // takeLast (no args) returns the element type
+
       currentTypeId = t.innerTypeId;
 
       continue;
@@ -3370,6 +3777,7 @@ const typeCheckTransformsForTypeId = (
       if (typeof tr.key !== 'string' || tr.key.length === 0) {
         return new Error('maxBy(key) requires a non-empty key');
       }
+
       const inner = context.types[t.innerTypeId];
 
       if (inner && inner.kind === 'object') {
@@ -3380,6 +3788,7 @@ const typeCheckTransformsForTypeId = (
             `maxBy(${tr.key}) key not found on element type '${typeNameForTypeId(context, t.innerTypeId)}'`
           );
         }
+
         const ft = context.types[field.typeId];
 
         if (
@@ -3394,6 +3803,7 @@ const typeCheckTransformsForTypeId = (
       }
 
       // maxBy(...) returns the element type
+
       currentTypeId = t.innerTypeId;
 
       continue;
@@ -3663,12 +4073,6 @@ const typeCheckCall = (
     checkedArgs.push(checkedArg);
   }
 
-  // Minimal builtins so your sample works.
-  //
-  // - random() -> number
-  // - floor(number) -> number
-  // - ceil(number) -> number
-
   let returnTypeId = UnknownTypeId;
 
   switch (name) {
@@ -3686,6 +4090,7 @@ const typeCheckCall = (
       if (checkedArgs.length !== 1) {
         return new Error('floor(...) takes 1 argument');
       }
+
       const arg0 = checkedArgs[0];
 
       if (
@@ -3707,6 +4112,7 @@ const typeCheckCall = (
       if (checkedArgs.length !== 1) {
         return new Error('ceil(...) takes 1 argument');
       }
+
       const arg0 = checkedArgs[0];
 
       if (
@@ -3728,6 +4134,7 @@ const typeCheckCall = (
       if (checkedArgs.length !== 1) {
         return new Error('round(...) takes 1 argument');
       }
+
       const arg0 = checkedArgs[0];
 
       if (
@@ -3746,10 +4153,7 @@ const typeCheckCall = (
     }
 
     default: {
-      // Unknown function -> unknown type (but still return a checked node so we can keep going).
-      returnTypeId = UnknownTypeId;
-
-      break;
+      return new Error(`unknown function '${name}'`);
     }
   }
 
@@ -3804,7 +4208,10 @@ const typeCheckUnary = (
     };
   }
 
-  // For now: ++ / -- require number (or unknown), produce number (or unknown)
+  // Keep type-check aligned with runtime: ++/-- only on variables.
+  if (checkedExpr.kind !== 'var') {
+    return new Error('++/-- only supported on variables');
+  }
 
   if (
     checkedExpr.typeId !== UnknownTypeId &&
@@ -4129,6 +4536,7 @@ const typeCheckExpression = (
 };
 
 // currently only parent: '~/...' works
+
 const typeCheckStatement = (
   stmt: VibeScriptStatement,
   scopeId: number,
@@ -4199,11 +4607,24 @@ const typeCheckStatement = (
       return outputTypeId;
     }
 
+    const config = typeCheckLLMConfig({
+      thinking: stmt.thinking ?? null,
+      provider: stmt.provider ?? null,
+      model: stmt.model ?? null,
+    });
+
+    if (config instanceof Error) {
+      return config;
+    }
+
     return {
       kind: 'step',
       name,
       expectsTypeId,
       outputTypeId,
+      thinking: config.thinking,
+      provider: config.provider,
+      model: config.model,
       transforms,
       step: stmt,
     };
@@ -4215,15 +4636,20 @@ const typeCheckStatement = (
   // This must not catch step statements, hence the `'step' in stmt` early return above.
 
   if ('expects' in stmt && !('step' in stmt)) {
-    const expects = stmt.expects as VibeScriptType;
+    const block = stmt as VibeScriptPreambleBlock;
 
-    const typeId = typeCheckType(expects, context);
+    // FIX: if no `expect:` was provided, do NOT force unknown.
+    // Default to string so preamble-only config behaves like “normal text output”.
+    const expectsNode = block.expects ?? null;
+
+    const typeId =
+      expectsNode === null ? StringTypeId : typeCheckType(expectsNode, context);
 
     if (typeId instanceof Error) {
       return typeId;
     }
 
-    const transforms = (stmt as VibeScriptPreambleBlock).transforms ?? null;
+    const transforms = block.transforms ?? null;
 
     const outputTypeId = typeCheckTransformsForTypeId(
       context,
@@ -4235,15 +4661,25 @@ const typeCheckStatement = (
       return outputTypeId;
     }
 
+    const config = typeCheckLLMConfig({
+      thinking: block.thinking ?? null,
+      provider: block.provider ?? null,
+      model: block.model ?? null,
+    });
+
+    if (config instanceof Error) {
+      return config;
+    }
+
     return {
       kind: 'preamble',
       typeId,
       outputTypeId,
+      thinking: config.thinking,
+      provider: config.provider,
+      model: config.model,
       transforms,
-      preamble: {
-        expects,
-        transforms,
-      },
+      preamble: block,
     };
   }
 
@@ -4434,9 +4870,13 @@ export const typeCheckVibeScript = (
 
   let expectsTypeId: number | null = null;
 
-  let expectsOutputTypeId: number | null = null;
+  let outputTypeId: number | null = null;
 
-  let expectsTransforms: VibeScriptTransform[] | null = null;
+  let defaultThinking: LLMThinking | null = null;
+  let defaultProvider: LLMProvider | null = null;
+  let defaultModel: LLMModel | null = null;
+
+  let transforms: VibeScriptTransform[] | null = null;
 
   const checkedBlocks: CheckedVibeScriptBlock[] = [];
 
@@ -4463,11 +4903,14 @@ export const typeCheckVibeScript = (
 
   for (const block of blocks) {
     // statement comment block
+
     if (block && typeof block === 'object' && 'statement' in block) {
       const stmt = block.statement;
 
-      // If we are encountering a new step statement, the previous step has “completed”
-      // from the point of view of later prompts, so its named output becomes available now.
+      // if we are encountering a new step statement, the previous step
+      // has “completed” from the point of view of later prompts, so its
+      // named output becomes available now
+
       if (stmt && typeof stmt === 'object' && 'step' in stmt) {
         const commitErr = commitPendingStepOutput();
 
@@ -4490,8 +4933,11 @@ export const typeCheckVibeScript = (
         }
 
         expectsTypeId = checkedStmt.typeId;
-        expectsOutputTypeId = checkedStmt.outputTypeId;
-        expectsTransforms = checkedStmt.transforms ?? null;
+        outputTypeId = checkedStmt.outputTypeId;
+        defaultThinking = checkedStmt.thinking ?? null;
+        defaultProvider = checkedStmt.provider ?? null;
+        defaultModel = checkedStmt.model ?? null;
+        transforms = checkedStmt.transforms ?? null;
       }
 
       if (checkedStmt.kind === 'step') {
@@ -4548,21 +4994,23 @@ export const typeCheckVibeScript = (
 
   const usesSteps = checkedBlocks.some(b => b.kind === 'step');
 
-  // If we are using steps, we do not allow a top-level expects.
+  // if we are using steps, we do not allow a top-level expects
+
   if (usesSteps && expectsTypeId !== null) {
     return new Error('top-level expects block is not allowed when using steps');
   }
 
-  // If no expects was provided (single-step script), default to string.
+  // if no expects was provided (single-step script), default to string
+
   const resolvedExpectsTypeId = usesSteps
     ? null
     : (expectsTypeId ?? StringTypeId);
 
-  const resolvedExpectsOutputTypeId = usesSteps
+  const resolvedOutputTypeId = usesSteps
     ? null
-    : (expectsOutputTypeId ?? resolvedExpectsTypeId);
+    : (outputTypeId ?? resolvedExpectsTypeId);
 
-  const resolvedExpectsTransforms = usesSteps ? null : expectsTransforms;
+  const resolvedTransforms = usesSteps ? null : transforms;
 
   ///
 
@@ -4584,9 +5032,9 @@ export const typeCheckVibeScript = (
 
   const implicitStepOutputTypeId = usesSteps
     ? StringTypeId
-    : (resolvedExpectsOutputTypeId ?? implicitStepExpectsTypeId);
+    : (resolvedOutputTypeId ?? implicitStepExpectsTypeId);
 
-  const implicitStepTransforms = usesSteps ? null : resolvedExpectsTransforms;
+  const implicitStepTransforms = usesSteps ? null : resolvedTransforms;
 
   for (const b of checkedBlocks) {
     if (b.kind === 'step') {
@@ -4600,6 +5048,23 @@ export const typeCheckVibeScript = (
         transforms: b.transforms ?? null,
         blocks: [],
       };
+
+      continue;
+    }
+
+    // file-includes should also “create” an implicit step so step-counting matches runtime
+
+    if (b.kind === 'file-include') {
+      if (!current) {
+        current = {
+          name: null,
+          expectsTypeId: implicitStepExpectsTypeId,
+          outputTypeId: implicitStepOutputTypeId,
+          expects: null,
+          transforms: implicitStepTransforms,
+          blocks: [],
+        };
+      }
 
       continue;
     }
@@ -4626,8 +5091,11 @@ export const typeCheckVibeScript = (
     blocks: checkedBlocks,
     steps,
     expectsTypeId: resolvedExpectsTypeId,
-    expectsOutputTypeId: resolvedExpectsOutputTypeId,
-    expectsTransforms: resolvedExpectsTransforms,
+    outputTypeId: resolvedOutputTypeId,
+    defaultThinking,
+    defaultProvider,
+    defaultModel,
+    transforms: resolvedTransforms,
     context,
   };
 };

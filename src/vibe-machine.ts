@@ -1,13 +1,20 @@
 import * as path from 'node:path';
 import * as fsSync from 'node:fs';
-import type {
-  ChatCompletionMessage,
-  LLMAccounting,
-  LLMThinking,
-  LLMTokenUsage,
+import {
+  type ChatCompletionMessage,
+  type LLMAccounting,
+  type LLMThinking,
+  type LLMTokenUsage,
+  estimateTokensForMessages,
 } from './llm-base';
-// import type { LLMCompleteChatModels, LLMModel } from './llm';
-import type { LLMCompleteChat, LLMModel, LLMProvider } from './llm';
+import {
+  type LLMCompleteChat,
+  type LLMModel,
+  type LLMProvider,
+  inferProviderForModel,
+  getModel,
+  computeCostUnits,
+} from './llm';
 import {
   type CheckedVibeScript,
   type CheckedVibeScriptExpression,
@@ -72,6 +79,7 @@ const placeholderForTypeId = (
   }
 
   // unknown / anything else
+
   return `<${label}: ${typeNameForTypeId(context, typeId)}>`;
 };
 
@@ -137,7 +145,7 @@ const stripSingleOuterCodeBlock = (raw: string): MarkdownCodeBlock | null => {
   // whole response is exactly one fenced block
 
   const m = trimmed.match(
-    /^```([a-zA-Z0-9_-]+)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/m
+    /^```([a-zA-Z0-9_-]+)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/
   );
 
   if (!m) {
@@ -606,13 +614,15 @@ const parseOutputForTypeId = (
     return null;
   }
 
-  // Build candidates in priority order:
+  // build candidates in priority order:
   // 1) entire-response single code block (common)
   // 2) any fenced code blocks (prefer ```json)
   // 3) balanced {...} / [...] snippets from within those
   // 4) balanced snippets from whole raw
   // 5) raw itself
+
   const candidates: string[] = [];
+
   const seen = new Set<string>();
 
   const push = (s: string) => {
@@ -839,6 +849,13 @@ const applyTransformsRuntime = (
   value: unknown,
   transforms: VibeScriptTransform[] | null
 ): unknown | Error => {
+  if (value instanceof Error) {
+    // preserve original parse/type errors rather
+    // than masking them with transform errors
+
+    return value;
+  }
+
   let out: unknown = value;
 
   for (const tr of transforms ?? []) {
@@ -1082,6 +1099,19 @@ const evalExpression = (
       }
 
       if (op === VibeScriptBinaryOperator.Add) {
+        // if either side is a string, perform concatenation
+
+        if (typeof lhs === 'string' || typeof rhs === 'string') {
+          return String(lhs) + String(rhs);
+        }
+
+        const ln = Number(lhs);
+        const rn = Number(rhs);
+
+        if (Number.isNaN(ln) || Number.isNaN(rn)) {
+          return new Error('arithmetic operator used on non-numbers');
+        }
+
         return ln + rn;
       }
 
@@ -1281,48 +1311,50 @@ const renderTextBlock = (
   return out;
 };
 
-// export const execVibeScript = async ({
-//   script,
-//   // completeChatModels,
-//   completeChat,
-//   models,
-//   thinking,
-//   logLevel,
-//   mode,
-// }: {
-//   script: CheckedVibeScript;
-//   // completeChatModels: LLMCompleteChatModels;
-//   completeChat: LLMCompleteChat;
-//   models: (() => LLMModel[]) | LLMModel[] | LLMModel;
-//   thinking?: LLMThinking;
-//   logLevel?: VibeScriptLogLevel;
-//   mode?: VibeScriptExecMode;
-// }): Promise<VibeScriptResult | Error> => {
+export type VibeScriptStepStartArgs = {
+  index: number;
+  totalSteps: number;
+  name: string | null;
+  prompt: string;
+};
+
+export type VibeScriptStepResultArgs = {
+  index: number;
+  totalSteps: number;
+  result: VibeScriptStepResult;
+};
+
+export type VibeScriptCallbacks = {
+  onStepStart?: (args: VibeScriptStepStartArgs) => Promise<null>;
+  onStepResult?: (args: VibeScriptStepResultArgs) => Promise<null>;
+};
+
+export type VibeScriptExecProps = (
+  | {
+      script: CheckedVibeScript;
+      completeChat: LLMCompleteChat;
+      models: (() => LLMModel[]) | LLMModel[] | LLMModel;
+      thinking?: LLMThinking;
+      logLevel?: VibeScriptLogLevel;
+      mode?: VibeScriptExecMode;
+    }
+  | {
+      script: CheckedVibeScript;
+      completeChat: LLMCompleteChat;
+      thinking?: LLMThinking;
+      provider?: LLMProvider;
+      logLevel?: VibeScriptLogLevel;
+      mode?: VibeScriptExecMode;
+    }
+) &
+  VibeScriptCallbacks;
 
 export const execVibeScript = async (
-  props:
-    | {
-        script: CheckedVibeScript;
-        completeChat: LLMCompleteChat;
-        models: (() => LLMModel[]) | LLMModel[] | LLMModel;
-        thinking?: LLMThinking;
-        logLevel?: VibeScriptLogLevel;
-        mode?: VibeScriptExecMode;
-      }
-    | {
-        script: CheckedVibeScript;
-        completeChat: LLMCompleteChat;
-        thinking?: LLMThinking;
-        provider?: LLMProvider;
-        logLevel?: VibeScriptLogLevel;
-        mode?: VibeScriptExecMode;
-      }
+  props: VibeScriptExecProps
 ): Promise<VibeScriptResult | Error> => {
   const env: VibeScriptRuntimeEnv = {};
 
   const script = props.script;
-
-  let stepIndex = 0;
 
   let messages: ChatCompletionMessage[] = [];
 
@@ -1374,6 +1406,8 @@ export const execVibeScript = async (
     };
   };
 
+  const DEFAULT_THINKING: LLMThinking = 'medium';
+
   let totalAccounting: LLMAccounting = {
     tokens: {
       inputTokens: 0,
@@ -1406,16 +1440,24 @@ export const execVibeScript = async (
       return implicitStepExpectsTypeId;
     }
 
-    if (script.expectsOutputTypeId !== null) {
-      return script.expectsOutputTypeId;
+    if (script.outputTypeId !== null) {
+      return script.outputTypeId;
     }
 
     return implicitStepExpectsTypeId;
   })();
 
-  const implicitStepTransforms = usesSteps
+  const implicitStepThinking = usesSteps
     ? null
-    : (script.expectsTransforms ?? null);
+    : (script.defaultThinking ?? null);
+
+  const implicitStepProvider = usesSteps
+    ? null
+    : (script.defaultProvider ?? null);
+
+  const implicitStepModel = usesSteps ? null : (script.defaultModel ?? null);
+
+  const implicitStepTransforms = usesSteps ? null : (script.transforms ?? null);
 
   ///
 
@@ -1423,6 +1465,9 @@ export const execVibeScript = async (
     name: string | null;
     expectsTypeId: number; // raw
     outputTypeId: number; // transformed
+    thinking: LLMThinking | null;
+    provider: LLMProvider | null;
+    model: LLMModel | null;
     transforms: VibeScriptTransform[] | null;
     outputName: string | null;
     inputName: string | null; // when set: do not call LLM; consume env[inputName] and apply transforms
@@ -1436,11 +1481,20 @@ export const execVibeScript = async (
       return null;
     }
 
-    const stepNameForLog = current.name || '<unnamed>';
+    const totalSteps = script.steps.length;
 
-    if (_logLevel !== 'off') {
-      writeSameLine(`Step: ${stepNameForLog}`);
+    const stepIndex = results.length;
+
+    if (props.onStepStart) {
+      await props.onStepStart({
+        index: stepIndex,
+        totalSteps,
+        name: current.name,
+        prompt: current.prompt,
+      });
     }
+
+    const stepNameForLog = current.name || '<unnamed>';
 
     const zeroAccounting: LLMAccounting = {
       tokens: {
@@ -1501,7 +1555,17 @@ export const execVibeScript = async (
 
       results.push(stepResult);
 
+      if (props.onStepResult) {
+        await props.onStepResult({
+          index: stepIndex,
+          totalSteps,
+          result: stepResult,
+        });
+      }
+
       if (_logLevel !== 'off') {
+        writeSameLine(`Step: ${stepNameForLog}; transform`);
+
         endSameLine(!(t instanceof Error), zeroAccounting.costUnits);
 
         if (_logLevel === 'dir') {
@@ -1540,6 +1604,7 @@ export const execVibeScript = async (
       const stepErr = new Error('empty step prompt');
 
       if (_logLevel !== 'off') {
+        writeSameLine(`Step: ${stepNameForLog}; input≈0`);
         endSameLine(false, 0);
       }
 
@@ -1555,6 +1620,134 @@ export const execVibeScript = async (
         content: prompt,
       },
     ];
+
+    ///
+
+    // resolve (provider/thinking/model) *now*, so logs match reality
+
+    const thinkingHint = current.thinking ?? props.thinking ?? null;
+
+    type PlannedLLMCall = {
+      models: (() => LLMModel[]) | LLMModel[] | LLMModel;
+      thinking: LLMThinking;
+      provider: LLMProvider | null;
+      model: LLMModel | null; // concrete model if known
+    };
+
+    const planned: PlannedLLMCall | Error = (() => {
+      // 1) step forces model
+
+      if (current.model !== null) {
+        const resolvedThinking = thinkingHint ?? DEFAULT_THINKING;
+
+        return {
+          models: current.model,
+          thinking: resolvedThinking,
+          provider: inferProviderForModel(current.model),
+          model: current.model,
+        };
+      }
+
+      // 2) step forces provider => pick a model now
+
+      if (current.provider !== null) {
+        const picked = getModel({
+          thinking: thinkingHint ?? undefined,
+          provider: current.provider,
+        });
+
+        if (picked instanceof Error) {
+          return picked;
+        }
+
+        const [provider, resolvedThinking, model] = picked;
+
+        return {
+          models: model, // lock in model so call matches log
+          thinking: resolvedThinking,
+          provider,
+          model,
+        };
+      }
+
+      // 3) outer call forces models list/single model
+
+      if ('models' in props) {
+        const resolvedThinking = thinkingHint ?? DEFAULT_THINKING;
+
+        const modelForEstimate: LLMModel | null =
+          typeof props.models === 'function'
+            ? null
+            : Array.isArray(props.models)
+              ? (props.models[0] ?? null)
+              : props.models;
+
+        return {
+          models: props.models,
+          thinking: resolvedThinking,
+          provider: modelForEstimate
+            ? inferProviderForModel(modelForEstimate)
+            : null,
+          model: modelForEstimate,
+        };
+      }
+
+      // 4) no models/provider passed => pick provider + model now
+
+      const picked = getModel({
+        thinking: thinkingHint ?? undefined,
+        provider: props.provider,
+      });
+
+      if (picked instanceof Error) {
+        return picked;
+      }
+
+      const [provider, resolvedThinking, model] = picked;
+
+      return {
+        models: model, // lock in model so call matches log
+        thinking: resolvedThinking,
+        provider,
+        model,
+      };
+    })();
+
+    if (planned instanceof Error) {
+      if (_logLevel !== 'off') {
+        writeSameLine(
+          `Step: ${stepNameForLog}; input≈${estimateTokensForMessages(nextMessages)}`
+        );
+        endSameLine(false, 0);
+      }
+
+      current = null;
+
+      return planned;
+    }
+
+    const inputTokenEstimate = estimateTokensForMessages(nextMessages);
+
+    const estimatedUsage: LLMTokenUsage = {
+      inputTokens: inputTokenEstimate,
+      outputTokens: 0,
+      thinkingTokens: 0,
+      totalTokens: inputTokenEstimate,
+      estimated: true,
+    };
+
+    const inputCost =
+      planned.model !== null
+        ? computeCostUnits(estimatedUsage, planned.model)
+        : null;
+
+    if (_logLevel !== 'off') {
+      writeSameLine(
+        `Step: ${stepNameForLog}${inputCost !== null ? `; inputCost=${inputCost}` : ''}; thinking: ${planned.thinking}; model: ${current.model !== null ? current.model : planned.model}`
+      );
+    }
+
+    ///
 
     // OUTPUT MODE: don’t call the LLM, but still “advance” with placeholders
 
@@ -1591,6 +1784,14 @@ export const execVibeScript = async (
 
       results.push(stepResult);
 
+      if (props.onStepResult) {
+        await props.onStepResult({
+          index: stepIndex,
+          totalSteps,
+          result: stepResult,
+        });
+      }
+
       if (current.outputName) {
         if (current.outputName in env) {
           const name = current.outputName;
@@ -1613,35 +1814,22 @@ export const execVibeScript = async (
         },
       ];
 
-      current = null;
+      if (_logLevel !== 'off') {
+        endSameLine(true, 0);
+      }
 
-      stepIndex++;
+      current = null;
 
       return null;
     }
 
     // RUN MODE: do the real LLM call
 
-    // const completion = await completeChatModels({
-    //   models,
-    //   messages: nextMessages,
-    //   thinking,
-    // });
-
-    const completion =
-      'models' in props
-        ? await props.completeChat({
-            models: props.models,
-            messages: nextMessages,
-            thinking: props.thinking,
-          })
-        : await props.completeChat({
-            provider: props.provider,
-            messages: nextMessages,
-            thinking: props.thinking,
-          });
-
-    stepIndex++;
+    const completion = await props.completeChat({
+      models: planned.models,
+      messages: nextMessages,
+      thinking: planned.thinking,
+    });
 
     if (completion instanceof Error) {
       if (_logLevel !== 'off') {
@@ -1659,6 +1847,11 @@ export const execVibeScript = async (
       tokens: sumTokenUsage(totalAccounting.tokens, accounting.tokens),
       costUnits: totalAccounting.costUnits + accounting.costUnits,
     };
+
+    // we intentionally bypass parseOutputForTypeId because the
+    // response of the LLM completion maps directly to 'string',
+    // if 'string' is the expected output type, irrespective of
+    // whether it was implicit or not
 
     const value: unknown =
       current.expectsTypeId === StringTypeId
@@ -1681,8 +1874,13 @@ export const execVibeScript = async (
 
     results.push(stepResult);
 
-    // const err =
-    //   parsed instanceof Error ? parsed : t instanceof Error ? t : null;
+    if (props.onStepResult) {
+      await props.onStepResult({
+        index: stepIndex,
+        totalSteps,
+        result: stepResult,
+      });
+    }
 
     const err = value instanceof Error ? value : null;
 
@@ -1769,6 +1967,9 @@ export const execVibeScript = async (
         name: b.name,
         expectsTypeId: b.expectsTypeId,
         outputTypeId: b.outputTypeId,
+        thinking: b.thinking,
+        provider: b.provider,
+        model: b.model,
         transforms: b.transforms ?? null,
         outputName: b.step.outputName ?? null,
         inputName: b.step.inputName ?? null,
@@ -1786,6 +1987,9 @@ export const execVibeScript = async (
           name: null,
           expectsTypeId: implicitStepExpectsTypeId,
           outputTypeId: implicitStepOutputTypeId,
+          thinking: implicitStepThinking,
+          provider: implicitStepProvider,
+          model: implicitStepModel,
           transforms: implicitStepTransforms,
           outputName: null,
           inputName: null,
@@ -1812,6 +2016,9 @@ export const execVibeScript = async (
           name: null,
           expectsTypeId: implicitStepExpectsTypeId,
           outputTypeId: implicitStepOutputTypeId,
+          thinking: implicitStepThinking,
+          provider: implicitStepProvider,
+          model: implicitStepModel,
           transforms: implicitStepTransforms,
           outputName: null,
           inputName: null,
@@ -1853,22 +2060,8 @@ export const execVibeScript = async (
   };
 };
 
-// export const exec = async ({
-//   contents,
-//   completeChatModels,
-//   models,
-//   thinking,
-//   logLevel,
-// }: {
-//   contents: string;
-//   completeChatModels: LLMCompleteChatModels;
-//   models: (() => LLMModel[]) | LLMModel[] | LLMModel;
-//   thinking?: LLMThinking;
-//   logLevel?: VibeScriptLogLevel;
-// }): Promise<VibeScriptResult | Error> => {
-
 export const exec = async (
-  props:
+  props: (
     | {
         contents: string;
         completeChat: LLMCompleteChat;
@@ -1883,6 +2076,8 @@ export const exec = async (
         provider?: LLMProvider;
         logLevel?: VibeScriptLogLevel;
       }
+  ) &
+    VibeScriptCallbacks
 ): Promise<VibeScriptResult | Error> => {
   const parsed = parseVibeScript(props.contents);
 
@@ -1903,6 +2098,8 @@ export const exec = async (
         models: props.models,
         thinking: props.thinking,
         logLevel: props.logLevel,
+        onStepStart: props.onStepStart,
+        onStepResult: props.onStepResult,
       })
     : await execVibeScript({
         script: checked,
@@ -1910,13 +2107,13 @@ export const exec = async (
         thinking: props.thinking,
         provider: props.provider,
         logLevel: props.logLevel,
+        onStepStart: props.onStepStart,
+        onStepResult: props.onStepResult,
       });
 };
 
-export const markdownify = (result: VibeScriptResult): string => {
-  const last = result.steps[result.steps.length - 1];
-
-  if (!last) {
+export const markdownifyStep = (stepResult: VibeScriptStepResult): string => {
+  if (!stepResult) {
     return '';
   }
 
@@ -2067,5 +2264,15 @@ export const markdownify = (result: VibeScriptResult): string => {
     return fallbackMarkdown(value);
   };
 
-  return renderValue(last.value, 1);
+  return renderValue(stepResult.value, 1);
+};
+
+export const markdownify = (result: VibeScriptResult): string => {
+  const last = result.steps[result.steps.length - 1];
+
+  if (!last) {
+    return '';
+  }
+
+  return markdownifyStep(last);
 };

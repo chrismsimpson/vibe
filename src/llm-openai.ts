@@ -56,11 +56,6 @@ const isOpenAIChatRequestMessageRole = (
 
 // request
 
-// export interface OpenAIChatRequestMessage {
-//   role: OpenAIChatRequestMessageRole;
-//   content: string;
-// }
-
 export type OpenAIChatContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string } };

@@ -12,6 +12,7 @@ import {
 const geminiLLMModels = [
   'gemini-2.0-flash',
   'gemini-2.5-pro',
+  'gemini-3-flash-preview',
   'gemini-3-pro-preview',
 ] as const;
 
@@ -103,13 +104,12 @@ export const completeChatGemini = async ({
 
   const _url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  const isProLikeModel =
-    model === 'gemini-2.5-pro' || model === 'gemini-3-pro-preview';
+  const _isProLikeModel = isProLikeModel(model);
 
-  const minThinkingBudget = isProLikeModel ? 128 : 0;
-  const maxThinkingBudget = isProLikeModel ? 32768 : 24576;
+  const minThinkingBudget = _isProLikeModel ? 128 : 0;
+  const maxThinkingBudget = _isProLikeModel ? 32768 : 24576;
 
-  const canDisableThinking = isProLikeModel === false;
+  const canDisableThinking = _isProLikeModel === false;
 
   if (thinkingBudget !== undefined) {
     if (Number.isInteger(thinkingBudget) === false) {
@@ -403,22 +403,30 @@ export const weightForGeminiModel = (m: GeminiLLMModel): number => {
 export const getGeminiModel = (thinking: LLMThinking): GeminiLLMModel => {
   // handle numeric specific budgets
 
+  // if (typeof thinking === 'number') {
+  //   // 0 or very low budget -> Flash
+
+  //   if (thinking <= 1024) {
+  //     return 'gemini-2.0-flash';
+  //   }
+
+  //   // high budgets (> 8k) -> 3 Pro Preview
+
+  //   if (thinking > 8192) {
+  //     return 'gemini-3-pro-preview';
+  //   }
+
+  //   // middle range -> 2.5 Pro
+
+  //   return 'gemini-2.5-pro';
+  // }
+
   if (typeof thinking === 'number') {
-    // 0 or very low budget -> Flash
-
-    if (thinking <= 1024) {
-      return 'gemini-2.0-flash';
-    }
-
-    // high budgets (> 8k) -> 3 Pro Preview
-
-    if (thinking > 8192) {
+    if (thinking > 4096) {
       return 'gemini-3-pro-preview';
     }
 
-    // middle range -> 2.5 Pro
-
-    return 'gemini-2.5-pro';
+    return 'gemini-3-flash-preview';
   }
 
   // handle named levels
@@ -431,7 +439,7 @@ export const getGeminiModel = (thinking: LLMThinking): GeminiLLMModel => {
 
     case 'auto':
     case 'medium':
-      return 'gemini-2.5-pro';
+      return 'gemini-3-flash-preview';
 
     case 'high':
     case 'max':

@@ -71,7 +71,7 @@ export const resolvePrompt = (arg?: string) => {
   }
 
   if (usingMostRecent) {
-    console.log(`No prompt specified, running '${prompt.file}'`);
+    console.log(`No prompt specified, running '${prompt.file}'\n`);
   }
 
   return prompt;

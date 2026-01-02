@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 
-import { exec, markdownify } from './vibe-machine';
+import { exec, markdownifyStep } from './vibe-machine';
 import { completeChat } from './llm-env';
 
 import { resolvePrompt } from './resolve-prompt';
@@ -20,18 +20,6 @@ setGlobalDispatcher(
   })
 );
 
-// const MODELS = 'gpt-5.2';
-// const THINKING = 'high';
-
-// const MODELS = 'gemini-3-pro-preview';
-// const THINKING = 'low';
-
-const MODELS = 'gemini-3-pro-preview';
-const THINKING = 'medium';
-
-// const MODELS = 'gpt-4o-mini-2024-07-18';
-// const THINKING = 'off';
-
 const LOG_LEVEL: 'log' = 'log';
 
 async function main(arg?: string) {
@@ -40,6 +28,20 @@ async function main(arg?: string) {
   const generationsDir = path.join(process.cwd(), 'generations');
 
   const now = new Date();
+
+  const startedAt = now
+    .toLocaleString('en-AU', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    })
+    .replace(/,/g, '');
+
+  console.log(`Started at: ${startedAt}\n`);
 
   const pad = (n: number): string => (n < 10 ? `0${n}` : `${n}`);
 
@@ -69,22 +71,58 @@ async function main(arg?: string) {
   ensureDirSync(generationsDir);
   ensureDirSync(generationsSubDir);
 
-  ///
-
-  // first read the raw script
-
   const promptName = path.basename(prompt.file, '.md');
 
   const contents = await fs.readFile(prompt.path, 'utf-8');
 
+  const modelForFile = (model: string): string => {
+    return (model ?? 'unknown').replace(/[^a-zA-Z0-9._-]+/g, '_');
+  };
+
+  const responsePath = path.join(generationsDir, 'response.md');
+
+  fsSync.writeFileSync(responsePath, '');
+
   const result = await exec({
     contents,
     completeChat,
-
-    models: MODELS,
-    thinking: THINKING,
-
     logLevel: LOG_LEVEL,
+    onStepStart: async ({ index, totalSteps, prompt }) => {
+      const stepSuffix = totalSteps > 1 ? `-${index + 1}` : '';
+
+      const userPromptFilename = `userPrompt-${stamp}-${promptName}${stepSuffix}.md`;
+
+      fsSync.writeFileSync(
+        path.join(generationsSubDir, userPromptFilename),
+        prompt
+      );
+
+      // maintain latest current prompt link
+
+      fsSync.writeFileSync(path.join(generationsDir, 'userPrompt.md'), prompt);
+
+      return null;
+    },
+    onStepResult: async ({ index, totalSteps, result }) => {
+      const stepSuffix = totalSteps > 1 ? `-${index + 1}` : '';
+
+      const _modelForFile = modelForFile(result.model);
+
+      const responseFilename = `response-${stamp}-${promptName}${stepSuffix}-${_modelForFile}.md`;
+
+      const response = result.raw ?? '';
+
+      fsSync.writeFileSync(
+        path.join(generationsSubDir, responseFilename),
+        response
+      );
+
+      // maintain latest current response link
+
+      fsSync.writeFileSync(responsePath, response);
+
+      return null;
+    },
   });
 
   if (result instanceof Error) {
@@ -95,47 +133,43 @@ async function main(arg?: string) {
     process.exit(1);
   }
 
-  const lastStep = result.steps[result.steps.length - 1] ?? null;
+  if (result.steps.length === 0) {
+    console.log('Vibe script executed but produced no steps');
 
-  const userPromptText = lastStep?.prompt ?? '';
+    return;
+  }
 
-  const markdown = markdownify(result);
+  const lastStep = result.steps[result.steps.length - 1];
 
-  const modelForFile = (lastStep?.model ?? 'unknown').replace(
-    /[^a-zA-Z0-9._-]+/g,
-    '_'
-  );
+  if (lastStep) {
+    const markdown = markdownifyStep(lastStep);
 
-  fsSync.writeFileSync(
-    path.join(generationsDir, 'userPrompt.md'),
-    userPromptText
-  );
-  fsSync.writeFileSync(path.join(generationsDir, 'response.md'), markdown);
+    const firstLine = (() => {
+      const i = markdown.indexOf('\n');
+      return i === -1 ? markdown : markdown.slice(0, i);
+    })();
 
-  fsSync.writeFileSync(
-    path.join(generationsSubDir, `userPrompt-${stamp}-${promptName}.md`),
-    userPromptText
-  );
+    const truncate = (s: string, max = 20) =>
+      s.length <= max ? s : `${s.slice(0, Math.max(0, max - 1))}…`;
 
-  fsSync.writeFileSync(
-    path.join(
-      generationsSubDir,
-      `response-${stamp}-${promptName}-${modelForFile}.md`
-    ),
-    markdown
-  );
+    const diff = Date.now() - now.getTime();
+    const diffSeconds = Math.floor(diff / 1000);
 
-  const firstLine = (() => {
-    const i = markdown.indexOf('\n');
-    return i === -1 ? markdown : markdown.slice(0, i);
-  })();
+    if (diffSeconds > 90) {
+      const diffMinutes = Math.floor(diffSeconds / 60);
+      const diffRemainingSeconds = diffSeconds % 60;
 
-  const truncate = (s: string, max = 20) =>
-    s.length <= max ? s : `${s.slice(0, Math.max(0, max - 1))}…`;
+      console.log(
+        `\nCompletion time: ${diffMinutes}m ${diffRemainingSeconds}s`
+      );
+    } else {
+      console.log(`\nCompletion time: ${diffSeconds} seconds`);
+    }
 
-  console.log('\nOutput:');
+    console.log('\nOutput:');
 
-  console.log(truncate(firstLine, 30));
+    console.log(truncate(firstLine, 30));
+  }
 }
 
 main(process.argv[2]).catch(err => {

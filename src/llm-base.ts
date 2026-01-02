@@ -60,7 +60,10 @@ export const estimateTokensForPart = (part: ChatContentPart): number => {
   }
 
   if (part.type === 'image_url') {
-    return estimateTokensForText(part.image_url.url);
+    // standard high-res cost is usually ~85-1100 tokens
+    // 300 is a safe(ish) "average" for estimation without fetching the image
+
+    return 300;
   }
 
   return 0;
