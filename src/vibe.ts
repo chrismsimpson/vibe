@@ -925,6 +925,7 @@ const parseTakeLastTransform = (
   }
 
   // with args form: takeLast(N)
+
   parser.position += 1;
 
   ///

@@ -1091,6 +1091,17 @@ const evalExpression = (
       op === VibeScriptBinaryOperator.Divide ||
       op === VibeScriptBinaryOperator.Modulo
     ) {
+      if (
+        op === VibeScriptBinaryOperator.Add &&
+        (typeof lhs === 'string' || typeof rhs === 'string')
+      ) {
+        // if either side is a string, perform concatenation
+
+        if (typeof lhs === 'string' || typeof rhs === 'string') {
+          return String(lhs) + String(rhs);
+        }
+      }
+
       const ln = Number(lhs);
       const rn = Number(rhs);
 
@@ -1099,19 +1110,6 @@ const evalExpression = (
       }
 
       if (op === VibeScriptBinaryOperator.Add) {
-        // if either side is a string, perform concatenation
-
-        if (typeof lhs === 'string' || typeof rhs === 'string') {
-          return String(lhs) + String(rhs);
-        }
-
-        const ln = Number(lhs);
-        const rn = Number(rhs);
-
-        if (Number.isNaN(ln) || Number.isNaN(rn)) {
-          return new Error('arithmetic operator used on non-numbers');
-        }
-
         return ln + rn;
       }
 
@@ -1163,7 +1161,8 @@ const evalExpression = (
       op === VibeScriptBinaryOperator.GreaterThan ||
       op === VibeScriptBinaryOperator.GreaterThanOrEqual
     ) {
-      // Prefer numeric compare when possible
+      // prefer numeric compare when possible
+
       if (typeof lhs === 'number' && typeof rhs === 'number') {
         if (op === VibeScriptBinaryOperator.LessThan) {
           return lhs < rhs;

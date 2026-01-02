@@ -12,6 +12,8 @@ export type Prompt = {
 export const resolvePrompt = (arg?: string) => {
   const cwd = process.cwd();
 
+  ///
+
   const promptsDir = path.join(cwd, 'prompts');
 
   const promptFiles = fsSync.existsSync(promptsDir)
@@ -34,20 +36,51 @@ export const resolvePrompt = (arg?: string) => {
     })
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
 
+  ///
+
+  const examplesDir = path.join(cwd, 'examples');
+
+  const exampleFiles = fsSync.existsSync(examplesDir)
+    ? fsSync.readdirSync(examplesDir).filter(f => f.endsWith('.md'))
+    : [];
+
+  const examples = exampleFiles
+    .map(file => {
+      const fullPath = path.join(examplesDir, file);
+
+      const st = fsSync.statSync(fullPath);
+
+      return {
+        file,
+        path: fullPath,
+        mtime: st.mtime,
+        mtimeMs: st.mtimeMs,
+        size: st.size,
+      } satisfies Prompt;
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  ///
+
   let prompt: Prompt | null = null;
 
   if (arg) {
-    const file = `${arg}.md`;
+    const file = arg.endsWith('.md') ? arg : `${arg}.md`;
 
-    const matches = prompts.filter(p => p.file === file);
+    const promptMatches = prompts.filter(p => p.file === file);
 
-    if (!matches || matches.length === 0) {
+    const exampleMatches = examples.filter(e => e.file === file);
+
+    if (
+      (!promptMatches || promptMatches.length === 0) &&
+      (!exampleMatches || exampleMatches.length === 0)
+    ) {
       console.error(`Prompt "${arg}" does not exist in ${promptsDir}`);
 
       process.exit(1);
     }
 
-    prompt = matches[0] ?? null;
+    prompt = promptMatches[0] || exampleMatches[0] || null;
   }
 
   if (!prompt && prompts.length === 0) {
