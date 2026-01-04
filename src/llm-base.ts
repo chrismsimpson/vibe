@@ -29,13 +29,11 @@ export type LLMTokenUsage = {
   inputTokens: number;
   outputTokens: number;
   thinkingTokens: number;
-  totalTokens: number;
-  estimated: boolean;
 };
 
 export type LLMAccounting = {
   tokens: LLMTokenUsage;
-  costUnits: number;
+  costUsd: number;
 };
 
 const tokenSplitRegex = /\s+/;
@@ -90,4 +88,60 @@ export const estimateTokensForMessages = (
   }
 
   return total;
+};
+
+export type LLMPricing =
+  | {
+      kind: 'flat';
+      inputUsdPerMTokens: number;
+      outputUsdPerMTokens: number;
+    }
+  | {
+      kind: 'tiered';
+      thresholdPromptTokens: number;
+      belowOrEqual: {
+        inputUsdPerMTokens: number;
+        outputUsdPerMTokens: number;
+      };
+      above: {
+        inputUsdPerMTokens: number;
+        outputUsdPerMTokens: number;
+      };
+    };
+
+export type LLMPricingRates = {
+  inputUsdPerMTokens: number;
+  outputUsdPerMTokens: number;
+};
+
+export const clampTokens = (n: number): number => {
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.floor(n);
+};
+
+export const resolvePricingRates = (
+  pricing: LLMPricing,
+  promptTokens: number
+): LLMPricingRates => {
+  if (pricing.kind === 'flat') {
+    return {
+      inputUsdPerMTokens: pricing.inputUsdPerMTokens,
+      outputUsdPerMTokens: pricing.outputUsdPerMTokens,
+    };
+  }
+
+  const tier =
+    promptTokens <= pricing.thresholdPromptTokens
+      ? pricing.belowOrEqual
+      : pricing.above;
+
+  return {
+    inputUsdPerMTokens: tier.inputUsdPerMTokens,
+    outputUsdPerMTokens: tier.outputUsdPerMTokens,
+  };
+};
+
+export const usdForTokens = (tokens: number, usdPerMTokens: number): number => {
+  // pricing is per 1,000,000 tokens
+  return (tokens / 1_000_000) * usdPerMTokens;
 };

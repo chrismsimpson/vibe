@@ -574,7 +574,18 @@ export type VibeScriptTextBlock = {
   parts: VibeScriptTextLiteralPart[];
 };
 
-export type VibeScriptBlock = VibeScriptCommentBlock | VibeScriptTextBlock;
+export type VibeScriptImageSource =
+  | { kind: 'url'; url: string }
+  | { kind: 'file'; path: string }; // raw path, e.g. "~/x/y.png"
+
+export type VibeScriptImageBlock = {
+  image: VibeScriptImageSource;
+};
+
+export type VibeScriptBlock =
+  | VibeScriptCommentBlock
+  | VibeScriptTextBlock
+  | VibeScriptImageBlock;
 
 const parseType = (parser: Parser<VibeScriptToken>): VibeScriptType | Error => {
   if (parserIsEof(parser)) {
@@ -3208,9 +3219,99 @@ const parseRegularCommentBlock = (
   };
 };
 
+const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp']);
+
+const extFromPathname = (pathname: string): string | null => {
+  const base = pathname.split('/').pop() ?? '';
+
+  const dot = base.lastIndexOf('.');
+
+  if (dot === -1) {
+    return null;
+  }
+
+  return base.slice(dot + 1).toLowerCase();
+};
+
+const scanCommentInner = (
+  parser: Parser<VibeScriptToken>
+): { inner: string; endPtr: number } | Error => {
+  const parts: string[] = [];
+
+  let i = parser.position;
+
+  while (!parserIsEof(parser)) {
+    const t = parser.tokens[i];
+
+    if (!t) {
+      break;
+    }
+
+    if (t.kind === 'punc' && t.value === '-->') {
+      return { inner: parts.join(''), endPtr: i };
+    }
+
+    parts.push(t.value ?? '');
+
+    i += 1;
+  }
+
+  return new Error('unterminated comment (missing "-->")');
+};
+
+const classifyImageComment = (
+  rawInner: string
+): VibeScriptImageSource | null | Error => {
+  const s = rawInner.trim();
+
+  // URL form
+
+  if (s.startsWith('http://') || s.startsWith('https://')) {
+    let u: URL;
+
+    try {
+      u = new URL(s);
+    } catch {
+      return new Error(`invalid URL in comment: '${s}'`);
+    }
+
+    const ext = extFromPathname(u.pathname);
+
+    if (!ext || !IMAGE_EXTS.has(ext)) {
+      return new Error(
+        `not implemented: URL comment is not an image (ext='${ext ?? 'none'}')`
+      );
+    }
+
+    return { kind: 'url', url: u.toString() };
+  }
+
+  // single-path ~/... form (only treat as image if *exactly one* token/path)
+
+  if (s.startsWith('~/')) {
+    // must be a single "path token" (otherwise it’s a file-include statement)
+
+    if (/\s/.test(s)) {
+      return null;
+    }
+
+    const ext = extFromPathname(s);
+
+    if (!ext || !IMAGE_EXTS.has(ext)) {
+      // NOT an image => fall back to existing file-include statement behavior
+
+      return null;
+    }
+
+    return { kind: 'file', path: s };
+  }
+
+  return null;
+};
+
 const parseCommentBlock = (
   parser: Parser<VibeScriptToken>
-): VibeScriptCommentBlock | Error => {
+): VibeScriptCommentBlock | VibeScriptImageBlock | Error => {
   if (parserIsEof(parser)) {
     return new Error(
       'unexpected end of file parsing vibe script comment block'
@@ -3240,6 +3341,42 @@ const parseCommentBlock = (
   }
 
   parser.position += 1;
+
+  ///
+
+  const scanned = scanCommentInner(parser);
+
+  if (scanned instanceof Error) {
+    return scanned;
+  }
+
+  const img = classifyImageComment(scanned.inner);
+
+  if (img instanceof Error) {
+    return img;
+  }
+
+  if (img !== null) {
+    // consume everything up to '-->' (endPtr points at '-->')
+
+    parser.position = scanned.endPtr;
+
+    const endTok = parser.tokens[parser.position];
+
+    if (endTok?.kind !== 'punc' || endTok.value !== '-->') {
+      return new Error('internal error: expected "-->" after scanning comment');
+    }
+
+    parser.position += 1; // consume '-->'
+
+    const newlinePeek = parser.tokens[parser.position];
+
+    if (newlinePeek?.kind === 'newline') {
+      parser.position += 1;
+    }
+
+    return { image: img };
+  }
 
   ///
 
@@ -3699,12 +3836,21 @@ export type CheckedVibeScriptTextBlock = {
   block: VibeScriptTextBlock;
 };
 
+export type CheckedVibeScriptImageBlock = {
+  kind: 'image';
+  source: VibeScriptImageSource;
+  resolvedPath: string | null;
+  mimeType: string | null;
+  block: VibeScriptImageBlock;
+};
+
 export type CheckedVibeScriptBlock =
   | CheckedVibeScriptPreambleBlock
   | CheckedVibeScriptStepBlock
   | CheckedVibeScriptVarDeclBlock
   | CheckedVibeScriptFileIncludeBlock
   | CheckedVibeScriptTextBlock
+  | CheckedVibeScriptImageBlock
   | CheckedVibeScriptRegularCommentBlock;
 
 export type CheckedVibeScript = {
@@ -5285,6 +5431,26 @@ const typeCheckTextBlock = (
   };
 };
 
+const mimeTypeForImageExt = (ext: string): string | null => {
+  switch (ext.toLowerCase()) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+
+    case 'png':
+      return 'image/png';
+
+    case 'gif':
+      return 'image/gif';
+
+    case 'bmp':
+      return 'image/bmp';
+
+    default:
+      return null;
+  }
+};
+
 export const typeCheckVibeScript = (
   blocks: VibeScriptBlock[]
 ): CheckedVibeScript | Error => {
@@ -5407,6 +5573,64 @@ export const typeCheckVibeScript = (
       continue;
     }
 
+    // image block
+
+    if (block && typeof block === 'object' && 'image' in block) {
+      const imgBlock = block as VibeScriptImageBlock;
+
+      const src = imgBlock.image;
+
+      if (src.kind === 'url') {
+        checkedBlocks.push({
+          kind: 'image',
+          source: src,
+          resolvedPath: null,
+          mimeType: null,
+          block: imgBlock,
+        });
+
+        continue;
+      }
+
+      // file
+
+      const rawPath = src.path;
+
+      let resolvedPath = rawPath;
+
+      if (rawPath.startsWith('~/')) {
+        resolvedPath = path.join(os.homedir(), rawPath.slice(2));
+      } else if (rawPath.startsWith('~')) {
+        return new Error(
+          `image file path starting with '~' must be followed by '/' ie '~/...'`
+        );
+      }
+
+      if (!fsSync.existsSync(resolvedPath)) {
+        return new Error(`image file does not exist: ${resolvedPath}`);
+      }
+
+      const ext = resolvedPath.split('.').pop()?.toLowerCase() ?? '';
+
+      const mimeType = mimeTypeForImageExt(ext);
+
+      if (!mimeType) {
+        return new Error(
+          `unsupported image extension '.${ext}' for ${resolvedPath}`
+        );
+      }
+
+      checkedBlocks.push({
+        kind: 'image',
+        source: src,
+        resolvedPath,
+        mimeType,
+        block: imgBlock,
+      });
+
+      continue;
+    }
+
     return new Error('unknown vibe script block kind while type checking');
   }
 
@@ -5506,6 +5730,19 @@ export const typeCheckVibeScript = (
       }
 
       current.blocks.push(b);
+    }
+
+    if (b.kind === 'image') {
+      if (!current) {
+        current = {
+          name: null,
+          expectsTypeId: implicitStepExpectsTypeId,
+          outputTypeId: implicitStepOutputTypeId,
+          expects: null,
+          transforms: implicitStepTransforms,
+          blocks: [],
+        };
+      }
     }
   }
 

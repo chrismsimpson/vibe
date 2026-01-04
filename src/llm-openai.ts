@@ -5,6 +5,7 @@ import {
   type LLMTokenUsage,
   estimateTokensForMessages,
   estimateTokensForText,
+  type LLMPricing,
 } from './llm-base';
 import { z } from 'zod';
 
@@ -21,18 +22,25 @@ const defaultReasoningEffort = 'high';
 
 // models
 
-const openAILLMModels = [
-  'o1-mini-2024-09-12',
-  'o3-mini-2025-01-31',
-  'o4-mini-2025-04-16',
-  'o3-2025-04-16',
-  'gpt-4o-mini-2024-07-18',
-  'gpt-5',
-  'gpt-5.1',
-  'gpt-5.2',
-] as const;
+const openAILLMModels = ['gpt-4o-mini-2024-07-18', 'gpt-5.2'] as const;
 
 export type OpenAILLMModel = (typeof openAILLMModels)[number];
+
+export const openAIPricing: Record<OpenAILLMModel, LLMPricing> = {
+  // 2026-01-04: input: $0.15; output: $0.60
+  'gpt-4o-mini-2024-07-18': {
+    kind: 'flat',
+    inputUsdPerMTokens: 0.15,
+    outputUsdPerMTokens: 0.6,
+  },
+
+  // 2026-01-04: input: $1.75; output: $14.00
+  'gpt-5.2': {
+    kind: 'flat',
+    inputUsdPerMTokens: 1.75,
+    outputUsdPerMTokens: 14.0,
+  },
+};
 
 export const isOpenAILLMModel = (model: string): model is OpenAILLMModel =>
   openAILLMModels.includes(model as OpenAILLMModel);
@@ -182,6 +190,8 @@ export const completeChatOpenAI = async ({
   return json as OpenAIChatCompletionResponse;
 };
 
+// message mapping
+
 export const completeChatModel = async ({
   apiKey,
   model,
@@ -212,69 +222,38 @@ export const completeChatModel = async ({
 
   const raw = response.choices[0]?.message.content ?? null;
 
-  const promptTokens = response.usage?.prompt_tokens;
-  const completionTokens = response.usage?.completion_tokens;
-  const totalTokens = response.usage?.total_tokens;
+  const inputTokens =
+    typeof response.usage?.prompt_tokens === 'number' &&
+    Number.isFinite(response.usage?.prompt_tokens)
+      ? response.usage?.prompt_tokens
+      : estimateTokensForMessages(messages);
 
-  const reasoningTokens =
+  const completionTokens = response.usage?.completion_tokens;
+
+  const reasoningTokensRaw =
     response.usage?.completion_tokens_details?.reasoning_tokens ??
     response.usage?.reasoning_tokens ??
     0;
 
-  let estimated = false;
-
-  const inputTokens = (() => {
-    if (typeof promptTokens === 'number' && Number.isFinite(promptTokens)) {
-      return promptTokens;
-    }
-
-    estimated = true;
-
-    return estimateTokensForMessages(messages);
-  })();
-
-  const outputTokens = (() => {
-    if (
-      typeof completionTokens === 'number' &&
-      Number.isFinite(completionTokens)
-    ) {
-      return completionTokens;
-    }
-
-    estimated = true;
-
-    return estimateTokensForText(raw ?? '');
-  })();
-
   const thinkingTokens =
-    typeof reasoningTokens === 'number' && Number.isFinite(reasoningTokens)
-      ? reasoningTokens
+    typeof reasoningTokensRaw === 'number' &&
+    Number.isFinite(reasoningTokensRaw)
+      ? Math.max(0, Math.floor(reasoningTokensRaw))
       : 0;
 
-  const total = (() => {
-    if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
-      return totalTokens;
-    }
-
-    if (estimated === false) {
-      estimated = true;
-    }
-
-    return inputTokens + outputTokens + thinkingTokens;
-  })();
+  const outputTokens =
+    typeof completionTokens === 'number' && Number.isFinite(completionTokens)
+      ? Math.max(0, Math.floor(completionTokens) - thinkingTokens)
+      : estimateTokensForText(raw ?? '');
 
   const tokens: LLMTokenUsage = {
     inputTokens,
     outputTokens,
     thinkingTokens,
-    totalTokens: total,
-    estimated,
   };
 
   return [raw, tokens];
 };
-
-// message mapping
 
 export const toOpenAIChatCompletionRequestMessages = (
   model: OpenAILLMModel,
@@ -347,36 +326,6 @@ export const getReasoningEffort = (
   }
 
   return reasoningEffort;
-};
-
-// cost weighting
-
-export const weightForOpenAIModel = (m: OpenAILLMModel): number => {
-  if (m.startsWith('gpt-5')) {
-    return 2.5;
-  }
-
-  if (m === 'o3-2025-04-16') {
-    return 2.0;
-  }
-
-  if (m === 'o4-mini-2025-04-16') {
-    return 1.2;
-  }
-
-  if (m === 'o3-mini-2025-01-31') {
-    return 1.0;
-  }
-
-  if (m === 'o1-mini-2024-09-12') {
-    return 0.8;
-  }
-
-  if (m === 'gpt-4o-mini-2024-07-18') {
-    return 0.7;
-  }
-
-  return 1.0;
 };
 
 // model resolution

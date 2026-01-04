@@ -1,23 +1,27 @@
 import ldShuffle from 'lodash/shuffle';
 import sample from 'lodash/sample';
-import type {
-  ChatCompletionMessage,
-  LLMAccounting,
-  LLMThinking,
-  LLMTokenUsage,
+import {
+  type ChatCompletionMessage,
+  type LLMAccounting,
+  type LLMThinking,
+  type LLMTokenUsage,
+  type LLMPricing,
+  clampTokens,
+  resolvePricingRates,
+  usdForTokens,
 } from './llm-base';
 import {
   type GeminiLLMModel,
   completeChatModel as completeChatGeminiModel,
   isGeminiLLMModel,
-  weightForGeminiModel,
+  geminiPricing,
   getGeminiModel,
 } from './llm-gemini';
 import {
   type OpenAILLMModel,
   completeChatModel as completeChatOpenAIModel,
   isOpenAILLMModel,
-  weightForOpenAIModel,
+  openAIPricing,
   getOpenAIModel,
 } from './llm-openai';
 
@@ -49,48 +53,97 @@ export type LLMCompleteChat = (
 
 export const shuffle = (): LLMModel[] => {
   console.log('Shuffling models');
-  return ldShuffle([
-    'gemini-2.0-flash',
-    'gemini-2.5-pro',
-    'o1-mini-2024-09-12',
-    'o3-mini-2025-01-31',
-  ]);
+  return ldShuffle(['gemini-2.0-flash', 'gpt-4o-mini-2024-07-18']);
 };
 
 export const thinkingShuffle = (): LLMModel[] => {
   console.log('Shuffling thinking models');
-  return ldShuffle(['gemini-2.5-pro', 'o3-mini-2025-01-31']);
+  return ldShuffle(['gemini-3-pro-preview', 'gpt-5.2']);
 };
 
-export const weightForModel = (m: LLMModel): number => {
-  if (isGeminiLLMModel(m)) {
-    return weightForGeminiModel(m);
+export const getPricingForModel = (model: LLMModel): LLMPricing => {
+  if (isGeminiLLMModel(model)) {
+    const m = model as GeminiLLMModel;
+    return geminiPricing[m];
   }
 
-  if (isOpenAILLMModel(m)) {
-    return weightForOpenAIModel(m);
+  if (isOpenAILLMModel(model)) {
+    const m = model as OpenAILLMModel;
+    return openAIPricing[m];
   }
 
-  return 1.0;
+  // LLMModel is an exhaustive union, so this
+  // should be unreachable, but to be safe
+
+  throw new Error(`No pricing found for model: ${model}`);
 };
 
-export const computeCostUnits = (usage: LLMTokenUsage, m: LLMModel): number => {
-  const COST_SCALE = 10;
+export const computeInputCostUsd = (args: {
+  model: LLMModel;
+  inputTokens: number;
+}): number => {
+  const promptTokens = clampTokens(args.inputTokens);
+  const pricing = getPricingForModel(args.model);
+  const rates = resolvePricingRates(pricing, promptTokens);
 
-  const weight = weightForModel(m);
+  return usdForTokens(promptTokens, rates.inputUsdPerMTokens);
+};
 
-  const billableTokens =
-    usage.inputTokens + usage.outputTokens + usage.thinkingTokens;
+export const computeOutputCostUsd = (args: {
+  model: LLMModel;
+  promptTokens: number; // needed for tiered pricing selection
+  outputTokens: number;
+  thinkingTokens?: number;
+}): number => {
+  const promptTokens = clampTokens(args.promptTokens);
+  const outputTokens = clampTokens(args.outputTokens);
+  const thinkingTokens = clampTokens(args.thinkingTokens ?? 0);
 
-  const raw = (billableTokens / 1000) * COST_SCALE * weight;
+  const pricing = getPricingForModel(args.model);
+  const rates = resolvePricingRates(pricing, promptTokens);
 
-  const units = Math.ceil(raw);
+  // billable output includes "thinking"/reasoning tokens when they exist
+  const billableOutputTokens = outputTokens + thinkingTokens;
 
-  if (units <= 0) {
-    return 1;
-  }
+  return usdForTokens(billableOutputTokens, rates.outputUsdPerMTokens);
+};
 
-  return units;
+export const computeCostUsd = (args: {
+  model: LLMModel;
+  usage: Pick<LLMTokenUsage, 'inputTokens' | 'outputTokens' | 'thinkingTokens'>;
+}): { inputUsd: number; outputUsd: number; totalUsd: number } => {
+  const inputUsd = computeInputCostUsd({
+    model: args.model,
+    inputTokens: args.usage.inputTokens,
+  });
+
+  const outputUsd = computeOutputCostUsd({
+    model: args.model,
+    promptTokens: args.usage.inputTokens,
+    outputTokens: args.usage.outputTokens,
+    thinkingTokens: args.usage.thinkingTokens,
+  });
+
+  return {
+    inputUsd,
+    outputUsd,
+    totalUsd: inputUsd + outputUsd,
+  };
+};
+
+export const abbreviateModelName = (model: LLMModel): string => {
+  const previewSuffix = /-preview$/;
+
+  const dateSuffix = /-\d{4}-\d{2}-\d{2}$/;
+
+  // apply both rules safely (order doesn't really
+  // matter here, but this is explicit)
+
+  let out = model.replace(previewSuffix, '');
+
+  out = out.replace(dateSuffix, '');
+
+  return out;
 };
 
 export const completeChatModel = async ({
@@ -107,14 +160,7 @@ export const completeChatModel = async ({
   messages: ChatCompletionMessage[] | string;
   thinking?: LLMThinking;
 }): Promise<[string, string | null, LLMAccounting] | Error> => {
-  const abbreviatedModelIndex = model.indexOf('-', model.indexOf('-') + 1);
-
-  const abbreviatedModel =
-    abbreviatedModelIndex !== -1
-      ? model.substring(0, abbreviatedModelIndex)
-      : model;
-
-  ///
+  const abbreviatedModel = abbreviateModelName(model);
 
   const result = isGeminiLLMModel(model)
     ? await completeChatGeminiModel({
@@ -142,9 +188,18 @@ export const completeChatModel = async ({
 
   const [raw, tokens] = result;
 
+  const cost = computeCostUsd({
+    model,
+    usage: {
+      inputTokens: tokens.inputTokens,
+      outputTokens: tokens.outputTokens,
+      thinkingTokens: tokens.thinkingTokens,
+    },
+  });
+
   const accounting: LLMAccounting = {
     tokens,
-    costUnits: computeCostUnits(tokens, model),
+    costUsd: cost.totalUsd,
   };
 
   return [abbreviatedModel, raw, accounting];

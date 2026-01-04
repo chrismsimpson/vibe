@@ -13,7 +13,8 @@ import {
   type LLMProvider,
   inferProviderForModel,
   getModel,
-  computeCostUnits,
+  computeInputCostUsd,
+  abbreviateModelName,
 } from './llm';
 import {
   type CheckedVibeScript,
@@ -1405,6 +1406,15 @@ export type VibeScriptExecProps = (
 ) &
   VibeScriptCallbacks;
 
+const fileToDataUri = (filePath: string, mimeType: string): string | Error => {
+  try {
+    const buf = fsSync.readFileSync(filePath);
+    return `data:${mimeType};base64,${buf.toString('base64')}`;
+  } catch {
+    return new Error(`failed to read image file: ${filePath}`);
+  }
+};
+
 export const execVibeScript = async (
   props: VibeScriptExecProps
 ): Promise<VibeScriptResult | Error> => {
@@ -1437,19 +1447,21 @@ export const execVibeScript = async (
     console.log(text);
   };
 
-  const endSameLine = (ok: boolean, cost: number) => {
+  const endSameLine = (ok: boolean, costUsd: number) => {
     const green = '\x1b[32m';
     const red = '\x1b[31m';
     const reset = '\x1b[0m';
 
     const mark = ok ? `${green}✓${reset}` : `${red}✗${reset}`;
 
+    const formatted = `$${costUsd.toFixed(6)}`;
+
     if (canWriteSameLine) {
-      writeSameLine(` ${mark} cost=${cost}\n`);
+      writeSameLine(` ${mark} cost=${formatted}\n`);
       return;
     }
 
-    console.log(`${mark} cost=${cost}`);
+    console.log(`${mark} cost=${formatted}`);
   };
 
   const sumTokenUsage = (a: LLMTokenUsage, b: LLMTokenUsage): LLMTokenUsage => {
@@ -1457,8 +1469,8 @@ export const execVibeScript = async (
       inputTokens: a.inputTokens + b.inputTokens,
       outputTokens: a.outputTokens + b.outputTokens,
       thinkingTokens: a.thinkingTokens + b.thinkingTokens,
-      totalTokens: a.totalTokens + b.totalTokens,
-      estimated: a.estimated || b.estimated,
+      // totalTokens: a.totalTokens + b.totalTokens,
+      // estimated: a.estimated || b.estimated,
     };
   };
 
@@ -1469,10 +1481,10 @@ export const execVibeScript = async (
       inputTokens: 0,
       outputTokens: 0,
       thinkingTokens: 0,
-      totalTokens: 0,
-      estimated: false,
+      // totalTokens: 0,
+      // estimated: false,
     },
-    costUnits: 0,
+    costUsd: 0,
   };
 
   const implicitStepExpectsTypeId = (() => {
@@ -1528,6 +1540,8 @@ export const execVibeScript = async (
     outputName: string | null;
     inputName: string | null; // when set: do not call LLM; consume env[inputName] and apply transforms
     prompt: string;
+    pendingText: string; // accumulated text not yet flushed into a message
+    userMessages: ChatCompletionMessage[]; // messages to append for this step
   };
 
   let current: CurrentStep | null = null;
@@ -1536,6 +1550,8 @@ export const execVibeScript = async (
     if (!current) {
       return null;
     }
+
+    flushPendingTextToMessage(current);
 
     const totalSteps = script.steps.length;
 
@@ -1557,22 +1573,26 @@ export const execVibeScript = async (
         inputTokens: 0,
         outputTokens: 0,
         thinkingTokens: 0,
-        totalTokens: 0,
-        estimated: false,
+        // totalTokens: 0,
+        // estimated: false,
       },
-      costUnits: 0,
+      costUsd: 0,
     };
 
     // transform-only step (no LLM call)
 
     if (current.inputName !== null) {
-      if (current.prompt.trim().length !== 0) {
+      if (
+        current.prompt.trim().length !== 0 ||
+        current.pendingText.trim().length !== 0 ||
+        current.userMessages.length !== 0
+      ) {
         const stepErr = new Error(
           'step has `from ...` but also has prompt text (LLM should not fire)'
         );
 
         if (_logLevel !== 'off') {
-          endSameLine(false, zeroAccounting.costUnits);
+          endSameLine(false, zeroAccounting.costUsd);
         }
 
         current = null;
@@ -1586,7 +1606,7 @@ export const execVibeScript = async (
         );
 
         if (_logLevel !== 'off') {
-          endSameLine(false, zeroAccounting.costUnits);
+          endSameLine(false, zeroAccounting.costUsd);
         }
 
         current = null;
@@ -1622,7 +1642,7 @@ export const execVibeScript = async (
       if (_logLevel !== 'off') {
         writeSameLine(`Step: ${stepNameForLog}; transform`);
 
-        endSameLine(!(t instanceof Error), zeroAccounting.costUnits);
+        endSameLine(!(t instanceof Error), zeroAccounting.costUsd);
 
         if (_logLevel === 'dir') {
           console.dir(stepResult.value, { depth: null });
@@ -1656,11 +1676,12 @@ export const execVibeScript = async (
 
     const prompt = current.prompt;
 
-    if (prompt.trim().length === 0) {
+    if (current.userMessages.length === 0) {
       const stepErr = new Error('empty step prompt');
 
       if (_logLevel !== 'off') {
         writeSameLine(`Step: ${stepNameForLog}; input≈0`);
+
         endSameLine(false, 0);
       }
 
@@ -1671,10 +1692,7 @@ export const execVibeScript = async (
 
     const nextMessages: ChatCompletionMessage[] = [
       ...messages,
-      {
-        role: 'user',
-        content: prompt,
-      },
+      ...current.userMessages,
     ];
 
     ///
@@ -1784,22 +1802,33 @@ export const execVibeScript = async (
 
     const inputTokenEstimate = estimateTokensForMessages(nextMessages);
 
-    const estimatedUsage: LLMTokenUsage = {
-      inputTokens: inputTokenEstimate,
-      outputTokens: 0,
-      thinkingTokens: 0,
-      totalTokens: inputTokenEstimate,
-      estimated: true,
-    };
+    // const estimatedUsage: LLMTokenUsage = {
+    //   inputTokens: inputTokenEstimate,
+    //   outputTokens: 0,
+    //   thinkingTokens: 0,
+    //   totalTokens: inputTokenEstimate,
+    //   estimated: true,
+    // };
 
-    const inputCost =
+    const inputCostUsd =
       planned.model !== null
-        ? computeCostUnits(estimatedUsage, planned.model)
+        ? computeInputCostUsd({
+            model: planned.model,
+            inputTokens: inputTokenEstimate,
+          })
         : null;
 
     if (_logLevel !== 'off') {
+      const model = current.model !== null ? current.model : planned.model;
+
+      const abbreviatedModelName = model ? abbreviateModelName(model) : null;
+
       writeSameLine(
-        `Step: ${stepNameForLog}${inputCost !== null ? `; inputCost=${inputCost}` : ''}; thinking: ${planned.thinking}; model: ${current.model !== null ? current.model : planned.model}`
+        `Step: ${stepNameForLog}${
+          inputCostUsd !== null ? `; inputCost=$${inputCostUsd.toFixed(6)}` : ''
+        }; thinking: ${planned.thinking}; model: ${
+          abbreviatedModelName ?? 'unknown'
+        }`
       );
     }
 
@@ -1813,10 +1842,10 @@ export const execVibeScript = async (
           inputTokens: 0,
           outputTokens: 0,
           thinkingTokens: 0,
-          totalTokens: 0,
-          estimated: false,
+          // totalTokens: 0,
+          // estimated: false,
         },
-        costUnits: 0,
+        costUsd: 0,
       };
 
       const label = current.name ?? `step_${stepIndex}`;
@@ -1901,7 +1930,8 @@ export const execVibeScript = async (
 
     totalAccounting = {
       tokens: sumTokenUsage(totalAccounting.tokens, accounting.tokens),
-      costUnits: totalAccounting.costUnits + accounting.costUnits,
+      // costUnits: totalAccounting.costUnits + accounting.costUnits,
+      costUsd: totalAccounting.costUsd + accounting.costUsd,
     };
 
     // we intentionally bypass parseOutputForTypeId because the
@@ -1941,7 +1971,7 @@ export const execVibeScript = async (
     const err = value instanceof Error ? value : null;
 
     if (_logLevel !== 'off') {
-      endSameLine(err === null, accounting.costUnits);
+      endSameLine(err === null, accounting.costUsd);
 
       if (_logLevel === 'dir') {
         console.dir(stepResult.value, { depth: null });
@@ -1979,6 +2009,17 @@ export const execVibeScript = async (
     current = null;
 
     return null;
+  };
+
+  const flushPendingTextToMessage = (s: CurrentStep) => {
+    if (s.pendingText.trim().length > 0) {
+      s.userMessages.push({
+        role: 'user',
+        content: s.pendingText,
+      });
+    }
+
+    s.pendingText = '';
   };
 
   ///
@@ -2030,6 +2071,8 @@ export const execVibeScript = async (
         outputName: b.step.outputName ?? null,
         inputName: b.step.inputName ?? null,
         prompt: '',
+        pendingText: '',
+        userMessages: [],
       };
 
       continue;
@@ -2050,6 +2093,8 @@ export const execVibeScript = async (
           outputName: null,
           inputName: null,
           prompt: '',
+          pendingText: '',
+          userMessages: [],
         };
       }
 
@@ -2060,6 +2105,8 @@ export const execVibeScript = async (
       }
 
       current.prompt += text;
+
+      current.pendingText += text;
 
       continue;
     }
@@ -2079,6 +2126,8 @@ export const execVibeScript = async (
           outputName: null,
           inputName: null,
           prompt: '',
+          pendingText: '',
+          userMessages: [],
         };
       }
 
@@ -2089,6 +2138,67 @@ export const execVibeScript = async (
       }
 
       current.prompt += text;
+
+      current.pendingText += text;
+
+      continue;
+    }
+
+    // image blocks: new message within the current step
+    if (b.kind === 'image') {
+      if (!current) {
+        current = {
+          name: null,
+          expectsTypeId: implicitStepExpectsTypeId,
+          outputTypeId: implicitStepOutputTypeId,
+          thinking: implicitStepThinking,
+          provider: implicitStepProvider,
+          model: implicitStepModel,
+          transforms: implicitStepTransforms,
+          outputName: null,
+          inputName: null,
+          prompt: '',
+          pendingText: '',
+          userMessages: [],
+        };
+      }
+
+      // flush accumulated text as a user message BEFORE the image
+
+      flushPendingTextToMessage(current);
+
+      // build the image_url part
+
+      const url = (() => {
+        if (b.source.kind === 'url') {
+          return b.source.url;
+        }
+
+        // file
+
+        if (!b.resolvedPath || !b.mimeType) {
+          return new Error(
+            'internal error: file image missing resolvedPath/mimeType'
+          );
+        }
+
+        return fileToDataUri(b.resolvedPath, b.mimeType);
+      })();
+
+      if (url instanceof Error) {
+        return url;
+      }
+
+      current.userMessages.push({
+        role: 'user',
+        content: [{ type: 'image_url', image_url: { url } }],
+      });
+
+      // keep a readable trace in "prompt" for callbacks/logging
+
+      const display = b.source.kind === 'url' ? b.source.url : b.source.path;
+
+      current.prompt += `\n\n[image: ${display}]\n\n`;
 
       continue;
     }
@@ -2105,7 +2215,7 @@ export const execVibeScript = async (
   }
 
   if (_logLevel !== 'off') {
-    console.log(`Total cost: ${totalAccounting.costUnits}`);
+    console.log(`Total cost: $${totalAccounting.costUsd.toFixed(6)}`);
   }
 
   return {

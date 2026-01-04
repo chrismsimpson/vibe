@@ -1,3 +1,4 @@
+<!-- thinking: off -->
 
 <!-- let foo = () => sample([
   lorem

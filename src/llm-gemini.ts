@@ -5,6 +5,7 @@ import {
   type LLMTokenUsage,
   estimateTokensForMessages,
   estimateTokensForText,
+  type LLMPricing,
 } from './llm-base';
 
 // models
@@ -17,6 +18,44 @@ const geminiLLMModels = [
 ] as const;
 
 export type GeminiLLMModel = (typeof geminiLLMModels)[number];
+
+export const geminiPricing: Record<GeminiLLMModel, LLMPricing> = {
+  // 2026-01-04: input: $0.10 (text / image / video), $0.70 (audio); output: $0.40
+  'gemini-2.0-flash': {
+    kind: 'flat',
+    inputUsdPerMTokens: 0.1,
+    outputUsdPerMTokens: 0.4,
+  },
+
+  // 2026-01-04: input: $1.25, prompts <= 200k tokens, $2.50, prompts > 200k tokens; output: $10.00, prompts <= 200k tokens, $15.00, prompts > 200k
+  'gemini-2.5-pro': {
+    kind: 'tiered',
+    thresholdPromptTokens: 200_000,
+    belowOrEqual: {
+      inputUsdPerMTokens: 1.25,
+      outputUsdPerMTokens: 10.0,
+    },
+    above: {
+      inputUsdPerMTokens: 2.5,
+      outputUsdPerMTokens: 15.0,
+    },
+  },
+
+  // 2026-01-04: input: $0.50 (text / image / video), $1.00 (audio); output: $3.00
+  'gemini-3-flash-preview': {
+    kind: 'flat',
+    inputUsdPerMTokens: 0.5,
+    outputUsdPerMTokens: 3.0,
+  },
+
+  // 2026-01-04: input: $2.00, prompts <= 200k tokens, $4.00, prompts > 200k tokens; output: $12.00, prompts <= 200k tokens, $18.00, prompts > 200k
+  'gemini-3-pro-preview': {
+    kind: 'tiered',
+    thresholdPromptTokens: 200_000,
+    belowOrEqual: { inputUsdPerMTokens: 2.0, outputUsdPerMTokens: 12.0 },
+    above: { inputUsdPerMTokens: 4.0, outputUsdPerMTokens: 18.0 },
+  },
+};
 
 export const isGeminiLLMModel = (model: string): model is GeminiLLMModel =>
   geminiLLMModels.includes(model as GeminiLLMModel);
@@ -217,55 +256,24 @@ export const completeChatModel = async ({
     response.candidates[0]?.content.parts.map(part => part.text).join('\n') ??
     null;
 
-  const promptTokens = response.usageMetadata?.promptTokenCount;
-  const completionTokens = response.usageMetadata?.candidatesTokenCount;
-  const totalTokens = response.usageMetadata?.totalTokenCount;
+  const inputTokens =
+    typeof response.usageMetadata?.promptTokenCount === 'number' &&
+    Number.isFinite(response.usageMetadata?.promptTokenCount)
+      ? response.usageMetadata?.promptTokenCount
+      : estimateTokensForMessages(messages);
 
-  let estimated = false;
-
-  const inputTokens = (() => {
-    if (typeof promptTokens === 'number' && Number.isFinite(promptTokens)) {
-      return promptTokens;
-    }
-
-    estimated = true;
-
-    return estimateTokensForMessages(messages);
-  })();
-
-  const outputTokens = (() => {
-    if (
-      typeof completionTokens === 'number' &&
-      Number.isFinite(completionTokens)
-    ) {
-      return completionTokens;
-    }
-
-    estimated = true;
-
-    return estimateTokensForText(raw ?? '');
-  })();
+  const outputTokens =
+    typeof response.usageMetadata?.candidatesTokenCount === 'number' &&
+    Number.isFinite(response.usageMetadata?.candidatesTokenCount)
+      ? response.usageMetadata?.candidatesTokenCount
+      : estimateTokensForText(raw ?? '');
 
   const thinkingTokens = 0;
-
-  const total = (() => {
-    if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
-      return totalTokens;
-    }
-
-    if (estimated === false) {
-      estimated = true;
-    }
-
-    return inputTokens + outputTokens + thinkingTokens;
-  })();
 
   const tokens: LLMTokenUsage = {
     inputTokens,
     outputTokens,
     thinkingTokens,
-    totalTokens: total,
-    estimated,
   };
 
   return [raw, tokens];
@@ -378,24 +386,6 @@ export const getGeminiThinkingBudget = (
   }
 
   return thinkingBudget;
-};
-
-// cost weighting
-
-export const weightForGeminiModel = (m: GeminiLLMModel): number => {
-  if (m === 'gemini-3-pro-preview') {
-    return 2.0;
-  }
-
-  if (m === 'gemini-2.5-pro') {
-    return 1.6;
-  }
-
-  if (m === 'gemini-2.0-flash') {
-    return 0.5;
-  }
-
-  return 1.0;
 };
 
 // model resolution
