@@ -9,21 +9,21 @@ import {
   clampTokens,
   resolvePricingRates,
   usdForTokens,
-} from './llm-base';
+} from './genai-base';
 import {
   type GeminiLLMModel,
   completeChatModel as completeChatGeminiModel,
   isGeminiLLMModel,
   geminiPricing,
   getGeminiModel,
-} from './llm-gemini';
+} from './genai-gemini';
 import {
   type OpenAILLMModel,
   completeChatModel as completeChatOpenAIModel,
   isOpenAILLMModel,
   openAIPricing,
   getOpenAIModel,
-} from './llm-openai';
+} from './genai-openai';
 
 export type LLMModel = GeminiLLMModel | OpenAILLMModel;
 

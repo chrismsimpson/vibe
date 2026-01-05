@@ -6,7 +6,7 @@ import {
   estimateTokensForMessages,
   estimateTokensForText,
   type LLMPricing,
-} from './llm-base';
+} from './genai-base';
 import { z } from 'zod';
 
 export const openAIReasoningEffortEnum = z.enum([

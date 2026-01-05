@@ -2,7 +2,7 @@ import type {
   ChatCompletionMessage,
   LLMAccounting,
   LLMThinking,
-} from './llm-base';
+} from './genai-base';
 import {
   type LLMModel,
   type LLMProvider,
@@ -11,7 +11,7 @@ import {
   completeChat as baseCompleteChat,
   type LLMCompleteChatModels,
   type LLMCompleteChat,
-} from './llm';
+} from './genai';
 import { env } from './env';
 
 const keys = {

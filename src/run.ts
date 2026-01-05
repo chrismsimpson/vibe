@@ -3,7 +3,7 @@ import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 
 import { exec, markdownifyStep } from './vibe-machine';
-import { completeChat } from './llm-env';
+import { completeChat } from './genai-env';
 
 import { resolvePrompt } from './resolve-prompt';
 

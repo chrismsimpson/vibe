@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
-import type { LLMCompleteChat, LLMModel } from './llm';
+import type { LLMCompleteChat, LLMModel } from './genai';
 import { resolvePrompt } from './resolve-prompt';
 import { parseVibeScript, typeCheckVibeScript } from './vibe';
 import { execVibeScript } from './vibe-machine';

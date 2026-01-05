@@ -6,7 +6,7 @@ import {
   type LLMThinking,
   type LLMTokenUsage,
   estimateTokensForMessages,
-} from './llm-base';
+} from './genai-base';
 import {
   type LLMCompleteChat,
   type LLMModel,
@@ -15,7 +15,7 @@ import {
   getModel,
   computeInputCostUsd,
   abbreviateModelName,
-} from './llm';
+} from './genai';
 import {
   type CheckedVibeScript,
   type CheckedVibeScriptExpression,

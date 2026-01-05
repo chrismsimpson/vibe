@@ -10,13 +10,13 @@ import {
 import * as fsSync from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { llmThinkingLevels, type LLMThinking } from './llm-base';
+import { llmThinkingLevels, type LLMThinking } from './genai-base';
 import {
   isLLMModel,
   isLLMProvider,
   type LLMModel,
   type LLMProvider,
-} from './llm';
+} from './genai';
 
 // lexing
 
@@ -47,7 +47,7 @@ const isVibeScriptPunc = (char: string): boolean => {
     char === '@' ||
     char === '~' ||
     char === '#' ||
-    // char === '$' || // excluding dollar sign so string interpolation works correctly
+    char === '$' ||
     char === '%' ||
     char === '^' ||
     char === '&' ||
@@ -3410,6 +3410,147 @@ const parseCommentBlock = (
   return parseRegularCommentBlock(parser);
 };
 
+// const parseTextBlock = (
+//   parser: Parser<VibeScriptToken>,
+//   options?: { disableInterpolation?: boolean }
+// ): VibeScriptTextBlock | Error => {
+//   if (parserIsEof(parser)) {
+//     return new Error('unexpected end of file parsing vibe script block');
+//   }
+
+//   const parts: VibeScriptTextLiteralPart[] = [];
+
+//   let quasis = '';
+
+//   let tokenCount = 0;
+
+//   // track inline markdown code spans delimited by single backticks
+
+//   let inInlineCode = false;
+
+//   while (!parserIsEof(parser)) {
+//     const t = parser.tokens[parser.position];
+
+//     if (!t) {
+//       break;
+//     }
+
+//     // toggle inline-code mode on backticks, but always treat
+//     // the backtick itself as literal text (part of quasis)
+
+//     if (t.kind === 'punc' && t.value === '`') {
+//       inInlineCode = !inInlineCode;
+
+//       quasis += t.value ?? '';
+
+//       parser.position += 1;
+
+//       tokenCount += 1;
+
+//       // continue normal accumulation; interpolation
+//       // is now disabled until we close `
+
+//       continue;
+//     }
+
+//     // interpolation start: `${`
+//     // Only allowed when:
+//     // - interpolation is enabled for this block
+//     // - we are NOT inside an inline code span
+//     // - we have the existing `$` + `{` pattern
+
+//     if (
+//       options?.disableInterpolation !== true &&
+//       !inInlineCode &&
+//       t.kind === 'text' &&
+//       t.value != null &&
+//       t.value.endsWith('$')
+//     ) {
+//       const next = parser.tokens[parser.position + 1];
+
+//       if (next?.kind === 'punc' && next.value === '{') {
+//         const prefix = t.value.slice(0, -1);
+
+//         if (prefix.length > 0) {
+//           quasis += prefix;
+//         }
+
+//         // consume the `$...` token + the `{`
+
+//         parser.position += 2;
+
+//         tokenCount += 2;
+
+//         if (quasis.length > 0) {
+//           parts.push({ quasis } as VibeScriptTextLiteralQuasis);
+
+//           quasis = '';
+//         }
+
+//         const exprStartPos = parser.position;
+
+//         const expr = parseExpression(
+//           parser,
+//           VibeScriptExpressionKind.WithAssignments
+//         );
+
+//         if (expr instanceof Error) {
+//           return expr;
+//         }
+
+//         tokenCount += parser.position - exprStartPos;
+
+//         const closeStartPos = parser.position;
+
+//         const closePtr = skipWhitespaceOrNewlines(
+//           parser.tokens,
+//           parser.position
+//         );
+
+//         const closeTok = parser.tokens[closePtr];
+
+//         if (closeTok?.kind !== 'punc' || closeTok.value !== '}') {
+//           return new Error(
+//             `expected closing brace '}', got '${closeTok?.kind} ${closeTok?.value}'`
+//           );
+//         }
+
+//         parser.position = closePtr + 1;
+
+//         tokenCount += parser.position - closeStartPos;
+
+//         parts.push({ expr } as VibeScriptTextLiteralExpression);
+
+//         continue;
+//       }
+//     }
+
+//     // normal text accumulation
+
+//     quasis += t.value ?? '';
+
+//     parser.position += 1;
+
+//     tokenCount += 1;
+
+//     if (t.kind === 'newline' && tokenCount > 1) {
+//       // tokenCount > 1 so that leading newlines are
+//       // consumed by current block rather than always
+//       // triggering a new block
+
+//       break;
+//     }
+//   }
+
+//   if (quasis.length > 0) {
+//     parts.push({ quasis } as VibeScriptTextLiteralQuasis);
+//   }
+
+//   return {
+//     parts,
+//   };
+// };
+
 const parseTextBlock = (
   parser: Parser<VibeScriptToken>,
   options?: { disableInterpolation?: boolean }
@@ -3457,71 +3598,63 @@ const parseTextBlock = (
     // Only allowed when:
     // - interpolation is enabled for this block
     // - we are NOT inside an inline code span
-    // - we have the existing `$` + `{` pattern
+    // - we have the `$` + `{` token pattern
 
-    if (
-      options?.disableInterpolation !== true &&
-      !inInlineCode &&
-      t.kind === 'text' &&
-      t.value != null &&
-      t.value.endsWith('$')
-    ) {
-      const next = parser.tokens[parser.position + 1];
+    if (options?.disableInterpolation !== true && !inInlineCode) {
+      if (t.kind === 'punc' && t.value === '$') {
+        const next = parser.tokens[parser.position + 1];
 
-      if (next?.kind === 'punc' && next.value === '{') {
-        const prefix = t.value.slice(0, -1);
+        if (next?.kind === 'punc' && next.value === '{') {
+          // flush accumulated literal text before the interpolation
 
-        if (prefix.length > 0) {
-          quasis += prefix;
-        }
+          if (quasis.length > 0) {
+            parts.push({ quasis } as VibeScriptTextLiteralQuasis);
 
-        // consume the `$...` token + the `{`
+            quasis = '';
+          }
 
-        parser.position += 2;
+          // consume '$' and '{'
 
-        tokenCount += 2;
+          parser.position += 2;
 
-        if (quasis.length > 0) {
-          parts.push({ quasis } as VibeScriptTextLiteralQuasis);
+          tokenCount += 2;
 
-          quasis = '';
-        }
+          const exprStartPos = parser.position;
 
-        const exprStartPos = parser.position;
-
-        const expr = parseExpression(
-          parser,
-          VibeScriptExpressionKind.WithAssignments
-        );
-
-        if (expr instanceof Error) {
-          return expr;
-        }
-
-        tokenCount += parser.position - exprStartPos;
-
-        const closeStartPos = parser.position;
-
-        const closePtr = skipWhitespaceOrNewlines(
-          parser.tokens,
-          parser.position
-        );
-
-        const closeTok = parser.tokens[closePtr];
-
-        if (closeTok?.kind !== 'punc' || closeTok.value !== '}') {
-          return new Error(
-            `expected closing brace '}', got '${closeTok?.kind} ${closeTok?.value}'`
+          const expr = parseExpression(
+            parser,
+            VibeScriptExpressionKind.WithAssignments
           );
+
+          if (expr instanceof Error) {
+            return expr;
+          }
+
+          tokenCount += parser.position - exprStartPos;
+
+          const closeStartPos = parser.position;
+
+          const closePtr = skipWhitespaceOrNewlines(
+            parser.tokens,
+            parser.position
+          );
+
+          const closeTok = parser.tokens[closePtr];
+
+          if (closeTok?.kind !== 'punc' || closeTok.value !== '}') {
+            return new Error(
+              `expected closing brace '}', got '${closeTok?.kind} ${closeTok?.value}'`
+            );
+          }
+
+          parser.position = closePtr + 1;
+
+          tokenCount += parser.position - closeStartPos;
+
+          parts.push({ expr } as VibeScriptTextLiteralExpression);
+
+          continue;
         }
-
-        parser.position = closePtr + 1;
-
-        tokenCount += parser.position - closeStartPos;
-
-        parts.push({ expr } as VibeScriptTextLiteralExpression);
-
-        continue;
       }
     }
 
