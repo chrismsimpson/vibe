@@ -7,22 +7,12 @@ import {
   parserIsEof,
   lexerMatch,
 } from './parsing';
-import * as fsSync from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
-import { llmThinkingLevels, type LLMThinking } from './genai-base';
-import {
-  isLLMModel,
-  isLLMProvider,
-  type LLMModel,
-  type LLMProvider,
-} from './genai';
 
 // lexing
 
-type SlopTokenKind = 'text' | 'punc' | 'newline' | 'whitespace' | 'eof';
+export type SlopTokenKind = 'text' | 'punc' | 'newline' | 'whitespace' | 'eof';
 
-type SlopToken = {
+export type SlopToken = {
   kind: SlopTokenKind;
   value?: string | null;
 };
@@ -126,6 +116,8 @@ export const lexSlopToken = (lexer: Lexer): SlopToken | Error => {
       };
     }
 
+    // comment end token '-->'
+
     if (peek === '-' && lexerMatch(lexer, '->', 1)) {
       const startPunc = lexer.position;
 
@@ -136,6 +128,8 @@ export const lexSlopToken = (lexer: Lexer): SlopToken | Error => {
         value: lexer.source.contents.slice(startPunc, lexer.position),
       };
     }
+
+    // fenced code block delimiter '```'
 
     if (peek === '`' && lexerMatch(lexer, '``', 1)) {
       const startPunc = lexer.position;
@@ -195,7 +189,7 @@ export const lexSlopToken = (lexer: Lexer): SlopToken | Error => {
 export const lexSlopTokensFromSource = (
   source: Source
 ): SlopToken[] | Error => {
-  const lexer = {
+  const lexer: Lexer = {
     source,
     position: 0,
   };
@@ -240,6 +234,143 @@ const skipWhitespaceOrNewlines = (
   return i;
 };
 
+const skipWhitespace = (tokens: SlopToken[], index: number): number => {
+  let i = index;
+
+  while (i < tokens.length && tokens[i]?.kind === 'whitespace') {
+    i++;
+  }
+
+  return i;
+};
+
+const tokenValue = (t: SlopToken | undefined): string => {
+  return t?.value ?? '';
+};
+
+const consumeUntilNewline = (parser: Parser<SlopToken>): string => {
+  const parts: string[] = [];
+
+  while (!parserIsEof(parser)) {
+    const t = parser.tokens[parser.position];
+
+    if (!t) {
+      break;
+    }
+
+    if (t.kind === 'newline') {
+      break;
+    }
+
+    parts.push(tokenValue(t));
+
+    parser.position += 1;
+  }
+
+  return parts.join('');
+};
+
+const consumeNewlineIfPresent = (parser: Parser<SlopToken>) => {
+  const t = parser.tokens[parser.position];
+
+  if (t?.kind === 'newline') {
+    parser.position += 1;
+  }
+};
+
+const isBlankLineAt = (tokens: SlopToken[], index: number): boolean => {
+  const ptr = skipWhitespace(tokens, index);
+
+  const t = tokens[ptr];
+
+  return t?.kind === 'newline' || t?.kind === 'eof';
+};
+
+const isHeadingStartAt = (tokens: SlopToken[], index: number): boolean => {
+  const ptr = skipWhitespace(tokens, index);
+
+  const t = tokens[ptr];
+
+  return t?.kind === 'punc' && t.value === '#';
+};
+
+const isFenceStartAt = (tokens: SlopToken[], index: number): boolean => {
+  const ptr = skipWhitespace(tokens, index);
+
+  const t = tokens[ptr];
+
+  return t?.kind === 'punc' && t.value === '```';
+};
+
+type ListLinePeek = {
+  bullet: string;
+  contentStartPtr: number;
+  isOrdered: boolean;
+};
+
+const peekListLineAt = (
+  tokens: SlopToken[],
+  index: number
+): ListLinePeek | null => {
+  const ptr = skipWhitespace(tokens, index);
+
+  const t0 = tokens[ptr];
+
+  if (!t0) {
+    return null;
+  }
+
+  // unordered: -, *, +
+
+  if (
+    t0.kind === 'punc' &&
+    (t0.value === '-' || t0.value === '*' || t0.value === '+')
+  ) {
+    const t1 = tokens[ptr + 1];
+
+    if (t1?.kind !== 'whitespace') {
+      return null;
+    }
+
+    const contentStartPtr = skipWhitespace(tokens, ptr + 2);
+
+    return {
+      bullet: t0.value ?? '-',
+      contentStartPtr,
+      isOrdered: false,
+    };
+  }
+
+  // ordered: 1. 2. 3.
+
+  if (
+    t0.kind === 'text' &&
+    typeof t0.value === 'string' &&
+    /^[0-9]+$/.test(t0.value)
+  ) {
+    const t1 = tokens[ptr + 1];
+    const t2 = tokens[ptr + 2];
+
+    if (t1?.kind !== 'punc' || t1.value !== '.') {
+      return null;
+    }
+
+    if (t2?.kind !== 'whitespace') {
+      return null;
+    }
+
+    const contentStartPtr = skipWhitespace(tokens, ptr + 3);
+
+    return {
+      bullet: `${t0.value}.`,
+      contentStartPtr,
+      isOrdered: true,
+    };
+  }
+
+  return null;
+};
+
 export type SlopTextLiteralQuasis = {
   quasis: string;
 };
@@ -251,8 +382,8 @@ export type SlopTextLiteralUrl = {
 export type SlopTextLiteralPart = SlopTextLiteralQuasis | SlopTextLiteralUrl;
 
 export type SlopHeadingBlock = {
-  number: number; // number of preceding `#`
-  parts: SlopTextLiteralPart[]; // parts delimited by things like `inline` runs
+  number: number;
+  parts: SlopTextLiteralPart[];
 };
 
 export type SlopTextLiteralBlock = {
@@ -279,33 +410,463 @@ export type SlopBlock =
   | SlopCodeBlock
   | SlopListBlock;
 
+const stripTrailingUrlPunc = (url: string): string => {
+  let out = url;
+
+  while (out.length > 0) {
+    const last = out[out.length - 1];
+
+    if (
+      last === '.' ||
+      last === ',' ||
+      last === ';' ||
+      last === ':' ||
+      last === '!' ||
+      last === '?' ||
+      last === ')' ||
+      last === ']' ||
+      last === '}' ||
+      last === '"' ||
+      last === "'"
+    ) {
+      out = out.slice(0, -1);
+      continue;
+    }
+
+    break;
+  }
+
+  return out;
+};
+
+const splitTextIntoParts = (text: string): SlopTextLiteralPart[] => {
+  const parts: SlopTextLiteralPart[] = [];
+
+  // permissive and cheap
+
+  const re = /https?:\/\/[^\s<>()]+/g;
+
+  let last = 0;
+
+  let m: RegExpExecArray | null;
+
+  do {
+    m = re.exec(text);
+
+    if (!m) {
+      break;
+    }
+
+    const raw = m[0] ?? '';
+
+    const start = m.index;
+
+    const end = start + raw.length;
+
+    if (start > last) {
+      parts.push({
+        quasis: text.slice(last, start),
+      });
+    }
+
+    const cleaned = stripTrailingUrlPunc(raw);
+
+    if (cleaned.length > 0) {
+      parts.push({
+        url: cleaned,
+      });
+
+      // keep any stripped punctuation as quasis
+      const strippedLen = raw.length - cleaned.length;
+
+      if (strippedLen > 0) {
+        parts.push({
+          quasis: raw.slice(raw.length - strippedLen),
+        });
+      }
+    } else {
+      parts.push({
+        quasis: raw,
+      });
+    }
+
+    last = end;
+  } while (m);
+
+  if (last < text.length) {
+    parts.push({
+      quasis: text.slice(last),
+    });
+  }
+
+  // compress adjacent quasis
+
+  const merged: SlopTextLiteralPart[] = [];
+
+  for (const p of parts) {
+    if ('quasis' in p) {
+      const prev = merged[merged.length - 1];
+
+      if (prev && 'quasis' in prev) {
+        merged[merged.length - 1] = {
+          quasis: prev.quasis + p.quasis,
+        };
+
+        continue;
+      }
+    }
+
+    merged.push(p);
+  }
+
+  return merged;
+};
+
 const parseHeadingBlock = (
   parser: Parser<SlopToken>
 ): SlopHeadingBlock | Error => {
-  return new Error('not implemented');
+  if (parserIsEof(parser)) {
+    return new Error('unexpected end of file parsing slop heading');
+  }
+
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  const linePtr = skipWhitespace(parser.tokens, parser.position);
+
+  const first = parser.tokens[linePtr];
+
+  if (first?.kind !== 'punc' || first.value !== '#') {
+    return new Error('expected heading starting with #');
+  }
+
+  parser.position = linePtr;
+
+  let count = 0;
+
+  while (!parserIsEof(parser)) {
+    const t = parser.tokens[parser.position];
+
+    if (t?.kind === 'punc' && t.value === '#') {
+      count += 1;
+      parser.position += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  // optional single space after heading markers
+
+  parser.position = skipWhitespace(parser.tokens, parser.position);
+
+  const text = consumeUntilNewline(parser);
+
+  consumeNewlineIfPresent(parser);
+
+  return {
+    number: count,
+    parts: splitTextIntoParts(text.trimEnd()),
+  };
 };
 
 const parseCodeBlock = (parser: Parser<SlopToken>): SlopCodeBlock | Error => {
-  return new Error('not implemented');
+  if (parserIsEof(parser)) {
+    return new Error('unexpected end of file parsing slop code block');
+  }
+
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  const linePtr = skipWhitespace(parser.tokens, parser.position);
+
+  const open = parser.tokens[linePtr];
+
+  if (open?.kind !== 'punc' || open.value !== '```') {
+    return new Error('expected opening ``` for slop code block');
+  }
+
+  parser.position = linePtr + 1;
+
+  // read format to end of line
+  const formatRaw = consumeUntilNewline(parser).trim();
+
+  const format = formatRaw.length > 0 ? formatRaw : null;
+
+  consumeNewlineIfPresent(parser);
+
+  const parts: string[] = [];
+
+  let atLineStart = true;
+
+  while (!parserIsEof(parser)) {
+    if (atLineStart) {
+      const closePtr = skipWhitespace(parser.tokens, parser.position);
+
+      const closeTok = parser.tokens[closePtr];
+
+      if (closeTok?.kind === 'punc' && closeTok.value === '```') {
+        // consume closing fence line
+        parser.position = closePtr + 1;
+
+        consumeUntilNewline(parser);
+
+        consumeNewlineIfPresent(parser);
+
+        return {
+          format: format ? format.toLowerCase() : null,
+          text: parts.join(''),
+        };
+      }
+    }
+
+    const t = parser.tokens[parser.position];
+
+    if (!t) {
+      break;
+    }
+
+    parts.push(tokenValue(t));
+
+    parser.position += 1;
+
+    atLineStart = t.kind === 'newline';
+  }
+
+  return new Error('unterminated slop code block missing closing ```');
+};
+
+const scanListRunLength = (tokens: SlopToken[], start: number): number => {
+  let i = start;
+
+  let count = 0;
+
+  let style:
+    | { kind: 'ordered' }
+    | { kind: 'unordered'; bullet: string }
+    | null = null;
+
+  while (i < tokens.length) {
+    // stop at blank line
+
+    if (isBlankLineAt(tokens, i)) {
+      break;
+    }
+
+    // stop before other block starts
+
+    if (isHeadingStartAt(tokens, i) || isFenceStartAt(tokens, i)) {
+      break;
+    }
+
+    const peek = peekListLineAt(tokens, i);
+
+    if (!peek) {
+      break;
+    }
+
+    if (style === null) {
+      style = peek.isOrdered
+        ? { kind: 'ordered' }
+        : { kind: 'unordered', bullet: peek.bullet };
+    } else {
+      if (style.kind === 'ordered') {
+        if (!peek.isOrdered) {
+          break;
+        }
+      } else {
+        if (peek.isOrdered || peek.bullet !== style.bullet) {
+          break;
+        }
+      }
+    }
+
+    // advance to next line without consuming parser
+    // state skip to newline then step over it
+
+    let j = i;
+
+    while (j < tokens.length) {
+      const t = tokens[j];
+
+      if (!t) {
+        break;
+      }
+
+      j += 1;
+
+      if (t.kind === 'newline') {
+        break;
+      }
+
+      if (t.kind === 'eof') {
+        break;
+      }
+    }
+
+    i = j;
+
+    count += 1;
+  }
+
+  return count;
+};
+
+const parseListBlock = (parser: Parser<SlopToken>): SlopListBlock | Error => {
+  const items: SlopListItem[] = [];
+
+  while (!parserIsEof(parser)) {
+    // stop at blank line
+
+    if (isBlankLineAt(parser.tokens, parser.position)) {
+      // consume single newline so outer loop progresses
+
+      const ptr = skipWhitespace(parser.tokens, parser.position);
+
+      if (parser.tokens[ptr]?.kind === 'newline') {
+        parser.position = ptr + 1;
+      }
+
+      break;
+    }
+
+    // stop before other block starts
+
+    if (
+      isHeadingStartAt(parser.tokens, parser.position) ||
+      isFenceStartAt(parser.tokens, parser.position)
+    ) {
+      break;
+    }
+
+    const peek = peekListLineAt(parser.tokens, parser.position);
+
+    if (!peek) {
+      break;
+    }
+
+    // consume bullet line
+    // move parser to bullet start, then to content start
+
+    const bulletStartPtr = skipWhitespace(parser.tokens, parser.position);
+
+    parser.position = bulletStartPtr;
+
+    // consume bullet tokens
+
+    if (peek.isOrdered) {
+      parser.position += 2;
+    } else {
+      parser.position += 1;
+    }
+
+    // consume required whitespace after bullet
+
+    parser.position = skipWhitespace(parser.tokens, parser.position);
+
+    const lineText = consumeUntilNewline(parser);
+
+    consumeNewlineIfPresent(parser);
+
+    items.push({
+      bullet: peek.bullet,
+      parts: splitTextIntoParts(lineText.trimEnd()),
+    });
+  }
+
+  return {
+    items,
+  };
+};
+
+const parseTextLiteralBlock = (
+  parser: Parser<SlopToken>
+): SlopTextLiteralBlock | Error => {
+  const parts: string[] = [];
+
+  let sawAny = false;
+
+  while (!parserIsEof(parser)) {
+    // stop before other block starts when we already have content
+
+    if (sawAny) {
+      if (
+        isHeadingStartAt(parser.tokens, parser.position) ||
+        isFenceStartAt(parser.tokens, parser.position)
+      ) {
+        break;
+      }
+    }
+
+    // stop on blank line (paragraph break)
+
+    if (isBlankLineAt(parser.tokens, parser.position)) {
+      // consume single newline so outer loop progresses
+
+      const ptr = skipWhitespace(parser.tokens, parser.position);
+
+      if (parser.tokens[ptr]?.kind === 'newline') {
+        parser.position = ptr + 1;
+      }
+
+      break;
+    }
+
+    // consume one line including its newline
+
+    while (!parserIsEof(parser)) {
+      const t = parser.tokens[parser.position];
+
+      if (!t) {
+        break;
+      }
+
+      parts.push(tokenValue(t));
+
+      parser.position += 1;
+
+      sawAny = true;
+
+      if (t.kind === 'newline') {
+        break;
+      }
+    }
+  }
+
+  const text = parts.join('');
+
+  return {
+    parts: splitTextIntoParts(text.trimEnd()),
+  };
 };
 
 const parseTextLikeBlock = (
   parser: Parser<SlopToken>
 ): SlopTextLiteralBlock | SlopListBlock | Error => {
-  // establish if it's a list of 'things' (ie N consistently
-  // bulleted lines), otherwise it's a text literal block
+  if (parserIsEof(parser)) {
+    return new Error('unexpected end of file parsing slop text block');
+  }
 
-  return new Error('not implemented');
+  parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  const runLen = scanListRunLength(parser.tokens, parser.position);
+
+  // require at least 2 lines to avoid treating hyphenated prose as a list
+  if (runLen >= 2) {
+    return parseListBlock(parser);
+  }
+
+  return parseTextLiteralBlock(parser);
 };
 
 const parseBlock = (parser: Parser<SlopToken>): SlopBlock | Error => {
   if (parserIsEof(parser)) {
-    return new Error('unexpected end of file parsing vibe script block');
+    return new Error('unexpected end of file parsing slop block');
   }
 
-  ///
-
   const nextPtr = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+  if (nextPtr >= parser.tokens.length) {
+    return new Error('unexpected end of input parsing slop block');
+  }
 
   const nextPeek = parser.tokens[nextPtr];
 
@@ -318,4 +879,193 @@ const parseBlock = (parser: Parser<SlopToken>): SlopBlock | Error => {
   }
 
   return parseTextLikeBlock(parser);
+};
+
+const parseBlocks = (parser: Parser<SlopToken>): SlopBlock[] | Error => {
+  const blocks: SlopBlock[] = [];
+
+  while (!parserIsEof(parser)) {
+    parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
+
+    if (parserIsEof(parser)) {
+      break;
+    }
+
+    const start = parser.position;
+
+    const b = parseBlock(parser);
+
+    if (b instanceof Error) {
+      return b;
+    }
+
+    blocks.push(b);
+
+    // paranoia against non-advancing parsers
+
+    if (parser.position === start) {
+      parser.position += 1;
+    }
+  }
+
+  return blocks;
+};
+
+export const parseSlop = (contents: string): SlopBlock[] | Error => {
+  const source: Source = { contents };
+
+  const tokens = lexSlopTokensFromSource(source);
+
+  if (tokens instanceof Error) {
+    return tokens;
+  }
+
+  const parser: Parser<SlopToken> = {
+    source,
+    tokens,
+    position: 0,
+  };
+
+  return parseBlocks(parser);
+};
+
+// type checking
+
+export const slopUrlCheckModes = ['off', 'validity', 'liveness'] as const;
+
+export type SlopUrlCheckMode = (typeof slopUrlCheckModes)[number];
+
+const isHttpUrl = (u: URL): boolean => {
+  return u.protocol === 'http:' || u.protocol === 'https:';
+};
+
+const validateUrl = (raw: string): URL | Error => {
+  let u: URL;
+
+  try {
+    u = new URL(raw);
+  } catch {
+    return new Error(`invalid url '${raw}'`);
+  }
+
+  if (!isHttpUrl(u)) {
+    return new Error(`unsupported url protocol '${u.protocol}' for '${raw}'`);
+  }
+
+  return u;
+};
+
+const headUrl = async (
+  url: string,
+  timeoutMs: number
+): Promise<null | Error> => {
+  const controller = new AbortController();
+
+  const id = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      method: 'HEAD',
+      signal: controller.signal,
+    });
+
+    // allow redirects and success
+    if (res.status >= 200 && res.status < 400) {
+      return null;
+    }
+
+    return new Error(`url not live '${url}' status=${res.status}`);
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+
+    return new Error(`url not live '${url}' error='${err.message}'`);
+  } finally {
+    clearTimeout(id);
+  }
+};
+
+const typeCheckParts = async (
+  parts: SlopTextLiteralPart[],
+  mode: SlopUrlCheckMode,
+  timeoutMs: number
+): Promise<null | Error> => {
+  if (mode === 'off') {
+    return null;
+  }
+
+  for (const p of parts) {
+    if (!p || typeof p !== 'object') {
+      continue;
+    }
+
+    if ('url' in p) {
+      const u = validateUrl(p.url);
+
+      if (u instanceof Error) {
+        return u;
+      }
+
+      if (mode === 'liveness') {
+        const live = await headUrl(u.toString(), timeoutMs);
+
+        if (live instanceof Error) {
+          return live;
+        }
+      }
+    }
+  }
+
+  return null;
+};
+
+export const typeCheckSlop = async (
+  blocks: SlopBlock[],
+  options?: {
+    mode?: SlopUrlCheckMode;
+    timeoutMs?: number;
+  }
+): Promise<SlopBlock[] | Error> => {
+  const mode: SlopUrlCheckMode = options?.mode ?? 'off';
+
+  const timeoutMs = options?.timeoutMs ?? 10_000;
+
+  if (mode === 'off') {
+    return blocks;
+  }
+
+  for (const b of blocks) {
+    if (!b || typeof b !== 'object') {
+      continue;
+    }
+
+    if ('parts' in b) {
+      const err = await typeCheckParts(
+        (b as SlopTextLiteralBlock | SlopHeadingBlock).parts,
+        mode,
+        timeoutMs
+      );
+
+      if (err instanceof Error) {
+        return err;
+      }
+
+      continue;
+    }
+
+    if ('items' in b) {
+      for (const it of b.items) {
+        const err = await typeCheckParts(it.parts, mode, timeoutMs);
+
+        if (err instanceof Error) {
+          return err;
+        }
+      }
+    }
+
+    // code blocks do not contain url parts structurally
+  }
+
+  return blocks;
 };

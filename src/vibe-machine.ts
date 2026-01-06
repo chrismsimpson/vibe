@@ -29,6 +29,14 @@ import {
   typeCheckVibeScript,
   StringTypeId,
 } from './vibe';
+import {
+  type SlopBlock,
+  type SlopListBlock,
+  type SlopTextLiteralPart,
+  parseSlop,
+  typeCheckSlop,
+  type SlopUrlCheckMode,
+} from './slop';
 
 export type VibeScriptRuntimeEnv = Record<string, unknown>;
 
@@ -135,56 +143,324 @@ const runtimeToString = (value: unknown): string | Error => {
   }
 };
 
-type MarkdownCodeBlock = {
-  lang: string | null;
-  content: string;
+const isPlainObject = (v: unknown): v is Record<string, unknown> => {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
 };
 
-const stripSingleOuterCodeBlock = (raw: string): MarkdownCodeBlock | null => {
-  const trimmed = raw.trim();
+const slopPartsToString = (parts: SlopTextLiteralPart[]): string => {
+  let out = '';
 
-  // whole response is exactly one fenced block
-
-  const m = trimmed.match(
-    /^```([a-zA-Z0-9_-]+)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/
-  );
-
-  if (!m) {
-    return null;
-  }
-
-  return {
-    lang: (m[1] ?? null)?.toLowerCase() ?? null,
-    content: m[2] ?? '',
-  };
-};
-
-const extractMarkdownCodeBlocks = (raw: string): MarkdownCodeBlock[] => {
-  const blocks: MarkdownCodeBlock[] = [];
-
-  // non-greedy capture between fences, allow any fence language, allow CRLF
-
-  const re = /```([a-zA-Z0-9_-]+)?[ \t]*\r?\n([\s\S]*?)```/g;
-
-  let m: RegExpExecArray | null;
-
-  do {
-    m = re.exec(raw);
-
-    if (!m) {
-      break;
+  for (const p of parts) {
+    if ('quasis' in p) {
+      out += p.quasis;
+      continue;
     }
 
-    blocks.push({
-      lang: (m[1] ?? null)?.toLowerCase() ?? null,
-      content: m[2] ?? '',
-    });
-  } while (m);
+    out += p.url;
+  }
 
-  return blocks;
+  return out;
 };
 
-const findBalancedJsonValue = (
+const slopBlockToText = (b: SlopBlock): string => {
+  if ('format' in b && 'text' in b) {
+    return b.text;
+  }
+
+  if ('items' in b) {
+    return b.items
+      .map(it => slopPartsToString(it.parts))
+      .join('\n')
+      .trimEnd();
+  }
+
+  if ('number' in b && 'parts' in b) {
+    return slopPartsToString(b.parts);
+  }
+
+  if ('parts' in b) {
+    return slopPartsToString(b.parts);
+  }
+
+  return '';
+};
+
+const slopBlocksToPlainText = (blocks: SlopBlock[]): string => {
+  return blocks.map(slopBlockToText).join('\n').trim();
+};
+
+const slopFirstListBlock = (blocks: SlopBlock[]): SlopListBlock | null => {
+  for (const b of blocks) {
+    if (b && typeof b === 'object' && 'items' in b) {
+      return b as SlopListBlock;
+    }
+  }
+
+  return null;
+};
+
+const listBlockToStringArray = (b: SlopListBlock): string[] => {
+  const out: string[] = [];
+
+  for (const it of b.items) {
+    const s = slopPartsToString(it.parts).trim();
+
+    if (s.length > 0) {
+      out.push(s);
+    }
+  }
+
+  return out;
+};
+
+const listBlockToKeyValueObject = (
+  b: SlopListBlock
+): Record<string, unknown> | null => {
+  const out: Record<string, unknown> = {};
+
+  let count = 0;
+
+  for (const it of b.items) {
+    const raw = slopPartsToString(it.parts);
+
+    const idx = raw.indexOf(':');
+
+    if (idx === -1) {
+      continue;
+    }
+
+    const key = raw.slice(0, idx).trim();
+    const value = raw.slice(idx + 1).trim();
+
+    if (key.length === 0) {
+      continue;
+    }
+
+    out[key] = value;
+
+    count += 1;
+  }
+
+  return count > 0 ? out : null;
+};
+
+const normalizeJsonish = (raw: string): string => {
+  let s = raw.trim();
+
+  // smart quotes
+  s = s.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
+
+  // python-ish literals
+  s = s
+    .replace(/\bNone\b/g, 'null')
+    .replace(/\bTrue\b/g, 'true')
+    .replace(/\bFalse\b/g, 'false');
+
+  // tolerate accidental leading "json\n"
+  const label = s.match(/^(json|javascript|js|ts)\s*\r?\n([\s\S]*)$/i);
+
+  if (label) {
+    const rest = (label[2] ?? '').trim();
+
+    if (rest.startsWith('{') || rest.startsWith('[')) {
+      s = rest;
+    }
+  }
+
+  // quote unquoted keys in object literals
+  s = s.replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3');
+
+  // single-quoted strings to double quotes
+  // simple state machine, avoids touching content inside double quoted strings
+
+  let out = '';
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i] ?? '';
+
+    if (inDouble) {
+      out += ch;
+
+      if (escaped) {
+        escaped = false;
+
+        continue;
+      }
+
+      if (ch === '\\') {
+        escaped = true;
+
+        continue;
+      }
+
+      if (ch === '"') {
+        inDouble = false;
+      }
+
+      continue;
+    }
+
+    if (inSingle) {
+      if (escaped) {
+        escaped = false;
+
+        if (ch === "'") {
+          out += "'";
+
+          continue;
+        }
+
+        out += `\\${ch}`;
+
+        continue;
+      }
+
+      if (ch === '\\') {
+        escaped = true;
+
+        continue;
+      }
+
+      if (ch === "'") {
+        inSingle = false;
+
+        out += '"';
+
+        continue;
+      }
+
+      if (ch === '"') {
+        out += '\\"';
+
+        continue;
+      }
+
+      out += ch;
+
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+
+      out += ch;
+
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+
+      out += '"';
+
+      continue;
+    }
+
+    out += ch;
+  }
+
+  s = out;
+
+  // remove trailing commas outside strings
+
+  out = '';
+  inSingle = false;
+  inDouble = false;
+  escaped = false;
+
+  const nextNonWs = (from: number): string | null => {
+    for (let i = from; i < s.length; i++) {
+      const ch = s[i] ?? '';
+
+      if (ch !== ' ' && ch !== '\t' && ch !== '\r' && ch !== '\n') {
+        return ch;
+      }
+    }
+
+    return null;
+  };
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i] ?? '';
+
+    if (inDouble) {
+      out += ch;
+
+      if (escaped) {
+        escaped = false;
+
+        continue;
+      }
+
+      if (ch === '\\') {
+        escaped = true;
+
+        continue;
+      }
+
+      if (ch === '"') {
+        inDouble = false;
+      }
+
+      continue;
+    }
+
+    if (inSingle) {
+      out += ch;
+
+      if (escaped) {
+        escaped = false;
+
+        continue;
+      }
+
+      if (ch === '\\') {
+        escaped = true;
+
+        continue;
+      }
+
+      if (ch === "'") {
+        inSingle = false;
+      }
+
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+
+      out += ch;
+
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+
+      out += ch;
+
+      continue;
+    }
+
+    if (ch === ',') {
+      const nxt = nextNonWs(i + 1);
+
+      if (nxt === '}' || nxt === ']') {
+        continue;
+      }
+    }
+
+    out += ch;
+  }
+
+  return out.trim();
+};
+
+const findBalancedJsonishAt = (
   s: string,
   start: number
 ): { text: string; end: number } | null => {
@@ -201,7 +477,7 @@ const findBalancedJsonValue = (
   let escaped = false;
 
   for (let i = start + 1; i < s.length; i++) {
-    const ch = s[i];
+    const ch = s[i] ?? '';
 
     if (inQuote) {
       if (escaped) {
@@ -224,7 +500,7 @@ const findBalancedJsonValue = (
     }
 
     if (ch === '"' || ch === "'") {
-      inQuote = ch;
+      inQuote = ch as '"' | "'";
 
       continue;
     }
@@ -262,7 +538,7 @@ const findBalancedJsonValue = (
   return null;
 };
 
-const extractBalancedJsonSnippets = (raw: string, max = 10): string[] => {
+const extractBalancedJsonishSnippets = (raw: string, max = 10): string[] => {
   const out: string[] = [];
 
   for (let i = 0; i < raw.length && out.length < max; i++) {
@@ -272,7 +548,7 @@ const extractBalancedJsonSnippets = (raw: string, max = 10): string[] => {
       continue;
     }
 
-    const found = findBalancedJsonValue(raw, i);
+    const found = findBalancedJsonishAt(raw, i);
 
     if (!found) {
       continue;
@@ -280,250 +556,32 @@ const extractBalancedJsonSnippets = (raw: string, max = 10): string[] => {
 
     out.push(found.text);
 
-    i = found.end; // skip forward
+    i = found.end;
   }
 
   return out;
 };
 
-const convertSingleQuotedStringsToDouble = (input: string): string => {
-  let out = '';
-
-  let inSingle = false;
-  let inDouble = false;
-  let escaped = false;
-
-  for (let i = 0; i < input.length; i++) {
-    const ch = input[i];
-
-    // inside double-quoted string: preserve, just track escapes
-
-    if (inDouble) {
-      out += ch;
-
-      if (escaped) {
-        escaped = false;
-
-        continue;
-      }
-
-      if (ch === '\\') {
-        escaped = true;
-
-        continue;
-      }
-
-      if (ch === '"') {
-        inDouble = false;
-      }
-
-      continue;
-    }
-
-    // inside single-quoted string: emit JSON double-quoted string
-    if (inSingle) {
-      if (escaped) {
-        escaped = false;
-
-        // handle \' -> '
-        if (ch === "'") {
-          out += "'";
-
-          continue;
-        }
-
-        // keep typical escapes (\n, \t, \\ ...)
-        // but if the escaped char is a double quote, it must remain escaped
-
-        out += `\\${ch}`;
-
-        continue;
-      }
-
-      if (ch === '\\') {
-        escaped = true;
-
-        continue;
-      }
-
-      if (ch === "'") {
-        inSingle = false;
-
-        out += '"';
-
-        continue;
-      }
-
-      // if we see a literal double quote inside a single-quoted string,
-      // it must be escaped because our output delimiter is "
-
-      if (ch === '"') {
-        out += '\\"';
-
-        continue;
-      }
-
-      out += ch;
-
-      continue;
-    }
-
-    // not in string
-    if (ch === '"') {
-      inDouble = true;
-
-      out += ch;
-
-      continue;
-    }
-
-    if (ch === "'") {
-      inSingle = true;
-
-      out += '"';
-
-      continue;
-    }
-
-    out += ch;
-  }
-
-  return out;
-};
-
-const removeTrailingCommasOutsideStrings = (input: string): string => {
-  let out = '';
-
-  let inQuote: '"' | "'" | null = null;
-  let escaped = false;
-
-  const nextNonWs = (from: number): string | null => {
-    for (let i = from; i < input.length; i++) {
-      const ch = input[i];
-
-      if (ch !== ' ' && ch !== '\t' && ch !== '\r' && ch !== '\n') {
-        return ch ?? null;
-      }
-    }
-
-    return null;
-  };
-
-  for (let i = 0; i < input.length; i++) {
-    const ch = input[i];
-
-    if (inQuote) {
-      out += ch;
-
-      if (escaped) {
-        escaped = false;
-
-        continue;
-      }
-
-      if (ch === '\\') {
-        escaped = true;
-
-        continue;
-      }
-
-      if (ch === inQuote) {
-        inQuote = null;
-      }
-
-      continue;
-    }
-
-    if (ch === '"' || ch === "'") {
-      inQuote = ch;
-
-      out += ch;
-
-      continue;
-    }
-
-    if (ch === ',') {
-      const nxt = nextNonWs(i + 1);
-
-      if (nxt === '}' || nxt === ']') {
-        continue; // drop trailing comma
-      }
-    }
-
-    out += ch;
-  }
-
-  return out;
-};
-
-const quoteUnquotedKeys = (input: string): string => {
-  // heuristic; avoids most “JS object literal” outputs
-  return input.replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3');
-};
-
-const normalizeJsonLike = (raw: string): string => {
-  let s = raw.trim();
-
-  // Sometimes code block content starts with a "json" line:
-  // ```\njson\n{...}\n```
-
-  const label = s.match(/^(json|javascript|js|ts)\s*\r?\n([\s\S]*)$/i);
-
-  if (label) {
-    const rest = (label[2] ?? '').trim();
-
-    if (rest.startsWith('{') || rest.startsWith('[')) {
-      s = rest;
-    }
-  }
-
-  // smart quotes
-
-  s = s.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
-
-  // python-ish literals
-
-  s = s
-    .replace(/\bNone\b/g, 'null')
-    .replace(/\bTrue\b/g, 'true')
-    .replace(/\bFalse\b/g, 'false');
-
-  // tolerate JS-ish object literals
-
-  s = quoteUnquotedKeys(s);
-
-  // single quotes + trailing commas
-
-  s = convertSingleQuotedStringsToDouble(s);
-  s = removeTrailingCommasOutsideStrings(s);
-
-  return s.trim();
-};
-
-const tryParseJsonFromCandidate = (candidate: string): unknown | Error => {
+const tryParseJsonish = (candidate: string): unknown | Error => {
   const trimmed = candidate.trim();
 
   if (trimmed.length === 0) {
-    return new Error('empty JSON candidate');
+    return new Error('empty json candidate');
   }
 
   try {
     return JSON.parse(trimmed);
   } catch {
-    // try relaxed normalization
+    // continue
   }
 
-  const relaxed = normalizeJsonLike(trimmed);
+  const normalized = normalizeJsonish(trimmed);
 
   try {
-    return JSON.parse(relaxed);
+    return JSON.parse(normalized);
   } catch {
-    return new Error('could not parse JSON from candidate');
+    return new Error('could not parse json candidate');
   }
-};
-
-const isPlainObject = (v: unknown): v is Record<string, unknown> => {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
 };
 
 const coerceContainerForExpectedTypeId = (
@@ -537,8 +595,6 @@ const coerceContainerForExpectedTypeId = (
     return parsed;
   }
 
-  // expected array/tuple but got { something: [...] }
-
   if ((t.kind === 'array' || t.kind === 'tuple') && !Array.isArray(parsed)) {
     if (isPlainObject(parsed)) {
       const keys = Object.keys(parsed);
@@ -546,8 +602,7 @@ const coerceContainerForExpectedTypeId = (
       if (keys.length === 1) {
         const k = keys[0] as string;
 
-        // biome-ignore lint/suspicious/noExplicitAny: runtime indexing
-        const inner = (parsed as any)[k];
+        const inner = parsed[k];
 
         if (Array.isArray(inner)) {
           return inner;
@@ -556,7 +611,6 @@ const coerceContainerForExpectedTypeId = (
     }
   }
 
-  // expected object but got [ { ... } ]
   if (t.kind === 'object' && Array.isArray(parsed) && parsed.length === 1) {
     const inner = parsed[0];
 
@@ -568,60 +622,10 @@ const coerceContainerForExpectedTypeId = (
   return parsed;
 };
 
-const parseOutputForTypeId = (
-  context: VibeScriptContext,
-  typeId: number,
-  raw: string | null
-): unknown | Error => {
-  if (raw === null) {
-    return new Error('llm returned null output');
-  }
-
-  const t = context.types[typeId];
-
-  if (!t) {
-    return new Error('unknown expected type id');
-  }
-
-  // if we couldn't type-check the output type, be permissive: return raw text
-
-  if (t.kind === 'unknown') {
-    return raw;
-  }
-
-  // for string: keep behavior mostly the same, but also unwrap a single code block
-
-  if (t.kind === 'builtin' && t.name === 'string') {
-    const single = stripSingleOuterCodeBlock(raw);
-
-    if (single) {
-      return single.content;
-    }
-
-    // keep existing exact ```json normalization too (harmless)
-
-    const start = '```json\n';
-
-    const end = '\n```';
-
-    if (raw.startsWith(start) && raw.endsWith(end)) {
-      return raw.slice(start.length, raw.length - end.length);
-    }
-
-    return raw;
-  }
-
-  if (t.kind === 'builtin' && t.name === 'void') {
-    return null;
-  }
-
-  // build candidates in priority order:
-  // 1) entire-response single code block (common)
-  // 2) any fenced code blocks (prefer ```json)
-  // 3) balanced {...} / [...] snippets from within those
-  // 4) balanced snippets from whole raw
-  // 5) raw itself
-
+const slopCandidatesFromBlocks = (
+  blocks: SlopBlock[],
+  raw: string
+): string[] => {
   const candidates: string[] = [];
 
   const seen = new Set<string>();
@@ -642,55 +646,132 @@ const parseOutputForTypeId = (
     candidates.push(s);
   };
 
-  const single = stripSingleOuterCodeBlock(raw);
+  // code blocks first, prefer json-ish formats
 
-  if (single) {
-    push(single.content);
+  const codeBlocks: { format: string | null; text: string }[] = [];
 
-    for (const snippet of extractBalancedJsonSnippets(single.content)) {
+  for (const b of blocks) {
+    if (b && typeof b === 'object' && 'format' in b && 'text' in b) {
+      codeBlocks.push({ format: b.format, text: b.text });
+    }
+  }
+
+  const isJsonishFormat = (f: string | null): boolean => {
+    if (!f) return false;
+
+    const x = f.toLowerCase();
+
+    return x === 'json' || x === 'js' || x === 'javascript' || x === 'ts';
+  };
+
+  for (const b of codeBlocks.filter(b => isJsonishFormat(b.format))) {
+    push(b.text);
+
+    for (const snippet of extractBalancedJsonishSnippets(b.text)) {
       push(snippet);
     }
   }
 
-  const blocks = extractMarkdownCodeBlocks(raw);
+  for (const b of codeBlocks.filter(b => !isJsonishFormat(b.format))) {
+    push(b.text);
 
-  // prefer json-labeled first
-  for (const b of blocks.filter(b => b.lang === 'json')) {
-    push(b.content);
-
-    for (const snippet of extractBalancedJsonSnippets(b.content)) {
+    for (const snippet of extractBalancedJsonishSnippets(b.text)) {
       push(snippet);
     }
   }
 
-  for (const b of blocks.filter(b => b.lang !== 'json')) {
-    push(b.content);
+  const plain = slopBlocksToPlainText(blocks);
 
-    for (const snippet of extractBalancedJsonSnippets(b.content)) {
-      push(snippet);
-    }
-  }
+  push(plain);
 
-  for (const snippet of extractBalancedJsonSnippets(raw)) {
+  for (const snippet of extractBalancedJsonishSnippets(plain)) {
     push(snippet);
   }
 
   push(raw);
 
+  for (const snippet of extractBalancedJsonishSnippets(raw)) {
+    push(snippet);
+  }
+
+  return candidates;
+};
+
+const parseSlopOutputForTypeId = async (
+  context: VibeScriptContext,
+  typeId: number,
+  raw: string | null,
+  options?: {
+    urlCheck?: SlopUrlCheckMode;
+  }
+): Promise<unknown | Error> => {
+  if (raw === null) {
+    return new Error('llm returned null output');
+  }
+
+  const t = context.types[typeId];
+
+  if (!t) {
+    return new Error('unknown expected type id');
+  }
+
+  if (t.kind === 'unknown') {
+    return raw;
+  }
+
+  if (t.kind === 'builtin' && t.name === 'void') {
+    return null;
+  }
+
+  // slop parse + optional url type check
+
+  const parsed = parseSlop(raw);
+
+  if (parsed instanceof Error) {
+    return parsed;
+  }
+
+  const checked = await typeCheckSlop(parsed, {
+    mode: options?.urlCheck ?? 'off',
+  });
+
+  if (checked instanceof Error) {
+    return checked;
+  }
+
+  // list driven parse is useful for arrays and simple objects
+
+  const list = slopFirstListBlock(checked);
+
+  if (list) {
+    if (t.kind === 'array' || t.kind === 'tuple') {
+      return listBlockToStringArray(list);
+    }
+
+    if (t.kind === 'object') {
+      const obj = listBlockToKeyValueObject(list);
+
+      if (obj) {
+        return obj;
+      }
+    }
+  }
+
+  // json-ish candidates from code blocks and text
+  const candidates = slopCandidatesFromBlocks(checked, raw);
+
   let lastErr: Error | null = null;
 
   for (const cand of candidates) {
-    const parsed = tryParseJsonFromCandidate(cand);
+    const v = tryParseJsonish(cand);
 
-    if (parsed instanceof Error) {
-      lastErr = parsed;
-
+    if (v instanceof Error) {
+      lastErr = v;
       continue;
     }
 
-    const coerced = coerceContainerForExpectedTypeId(context, typeId, parsed);
+    const coerced = coerceContainerForExpectedTypeId(context, typeId, v);
 
-    // Validate minimal shape (same spirit as your original code)
     if (t.kind === 'builtin') {
       if (t.name === 'number') {
         if (typeof coerced !== 'number') {
@@ -716,13 +797,15 @@ const parseOutputForTypeId = (
         return coerced;
       }
 
+      // string is handled by the caller, keep permissive fallback
+
       return coerced;
     }
 
     if (t.kind === 'array' || t.kind === 'tuple') {
       if (!Array.isArray(coerced)) {
         lastErr = new Error(
-          `expected '${typeNameForTypeId(context, typeId)}', got non-array JSON`
+          `expected '${typeNameForTypeId(context, typeId)}', got non-array json`
         );
 
         continue;
@@ -734,7 +817,7 @@ const parseOutputForTypeId = (
     if (t.kind === 'object') {
       if (!isPlainObject(coerced)) {
         lastErr = new Error(
-          `expected '${typeNameForTypeId(context, typeId)}', got non-object JSON`
+          `expected '${typeNameForTypeId(context, typeId)}', got non-object json`
         );
 
         continue;
@@ -746,9 +829,12 @@ const parseOutputForTypeId = (
     return coerced;
   }
 
-  // Final fallbacks for number/bool if response is mostly prose (no JSON candidates worked)
+  // final fallbacks for scalar builtins using plain text
+
+  const plain = slopBlocksToPlainText(checked);
+
   if (t.kind === 'builtin' && t.name === 'number') {
-    const m = raw.match(/-?\d+(\.\d+)?/);
+    const m = plain.match(/-?\d+(\.\d+)?/);
 
     if (m) {
       const n = Number(m[0]);
@@ -760,10 +846,10 @@ const parseOutputForTypeId = (
   }
 
   if (t.kind === 'builtin' && t.name === 'boolean') {
-    const m = raw.match(/\b(true|false)\b/i);
+    const m = plain.match(/\b(true|false)\b/i);
 
-    if (m) {
-      return m[1]?.toLowerCase() === 'true';
+    if (m && typeof m[1] === 'string') {
+      return m[1].toLowerCase() === 'true';
     }
   }
 
@@ -824,12 +910,11 @@ const maxByRuntime = (value: unknown, key: string): unknown | Error => {
   let bestScore = Number.NEGATIVE_INFINITY;
 
   for (const item of value) {
-    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+    if (!isPlainObject(item)) {
       return new Error('maxBy expects an array of objects');
     }
 
-    // biome-ignore lint/suspicious/noExplicitAny: runtime indexing
-    const raw = (item as any)[key];
+    const raw = item[key];
 
     const n = typeof raw === 'number' ? raw : Number(raw);
 
@@ -851,9 +936,6 @@ const applyTransformsRuntime = (
   transforms: VibeScriptTransform[] | null
 ): unknown | Error => {
   if (value instanceof Error) {
-    // preserve original parse/type errors rather
-    // than masking them with transform errors
-
     return value;
   }
 
@@ -1062,7 +1144,7 @@ const evalExpression = (
       return !v;
     }
 
-    // For now: only support ++/-- on variables
+    // ++/-- only supported on variables
 
     if (expr.expr.kind !== 'var') {
       return new Error('++/-- only supported on variables at runtime');
@@ -1112,8 +1194,6 @@ const evalExpression = (
   if (expr.kind === 'binary') {
     const op = expr.operator;
 
-    // assignment needs special casing (LHS must be var, don’t eagerly coerce numbers, etc)
-
     if (op === VibeScriptBinaryOperator.Assign) {
       if (expr.lhs.kind !== 'var') {
         return new Error('left-hand side of assignment must be a var');
@@ -1153,11 +1233,7 @@ const evalExpression = (
         op === VibeScriptBinaryOperator.Add &&
         (typeof lhs === 'string' || typeof rhs === 'string')
       ) {
-        // if either side is a string, perform concatenation
-
-        if (typeof lhs === 'string' || typeof rhs === 'string') {
-          return String(lhs) + String(rhs);
-        }
+        return String(lhs) + String(rhs);
       }
 
       const ln = Number(lhs);
@@ -1219,8 +1295,6 @@ const evalExpression = (
       op === VibeScriptBinaryOperator.GreaterThan ||
       op === VibeScriptBinaryOperator.GreaterThanOrEqual
     ) {
-      // prefer numeric compare when possible
-
       if (typeof lhs === 'number' && typeof rhs === 'number') {
         if (op === VibeScriptBinaryOperator.LessThan) {
           return lhs < rhs;
@@ -1278,8 +1352,6 @@ const evalExpression = (
     return new Error('unsupported binary operator at runtime');
   }
 
-  // unknown
-
   return new Error('unknown expression kind at runtime');
 };
 
@@ -1287,7 +1359,7 @@ const renderFileIncludeBlock = (
   block: CheckedVibeScriptBlock
 ): string | Error => {
   if (block.kind !== 'file-include') {
-    return new Error('internal error: expected file-include block');
+    return new Error('internal error expected file-include block');
   }
 
   let out = '';
@@ -1332,7 +1404,7 @@ const renderTextBlock = (
   context: VibeScriptContext
 ): string | Error => {
   if (block.kind !== 'text') {
-    return new Error('internal error: expected text block');
+    return new Error('internal error expected text block');
   }
 
   let out = '';
@@ -1340,7 +1412,6 @@ const renderTextBlock = (
   for (const p of block.parts) {
     if (p.kind === 'quasis') {
       out += p.value;
-
       continue;
     }
 
@@ -1434,13 +1505,11 @@ export const execVibeScript = async (
 
   const canWriteSameLine =
     typeof process !== 'undefined' &&
-    // biome-ignore lint/suspicious/noExplicitAny: runtime feature detection
-    typeof (process as any).stdout?.write === 'function';
+    typeof process.stdout?.write === 'function';
 
   const writeSameLine = (text: string) => {
     if (canWriteSameLine) {
-      // biome-ignore lint/suspicious/noExplicitAny: runtime feature detection
-      (process as any).stdout.write(text);
+      process.stdout.write(text);
       return;
     }
 
@@ -1469,8 +1538,6 @@ export const execVibeScript = async (
       inputTokens: a.inputTokens + b.inputTokens,
       outputTokens: a.outputTokens + b.outputTokens,
       thinkingTokens: a.thinkingTokens + b.thinkingTokens,
-      // totalTokens: a.totalTokens + b.totalTokens,
-      // estimated: a.estimated || b.estimated,
     };
   };
 
@@ -1481,8 +1548,6 @@ export const execVibeScript = async (
       inputTokens: 0,
       outputTokens: 0,
       thinkingTokens: 0,
-      // totalTokens: 0,
-      // estimated: false,
     },
     costUsd: 0,
   };
@@ -1527,8 +1592,6 @@ export const execVibeScript = async (
 
   const implicitStepTransforms = usesSteps ? null : (script.transforms ?? null);
 
-  ///
-
   type CurrentStep = {
     name: string | null;
     expectsTypeId: number; // raw
@@ -1538,13 +1601,24 @@ export const execVibeScript = async (
     model: LLMModel | null;
     transforms: VibeScriptTransform[] | null;
     outputName: string | null;
-    inputName: string | null; // when set: do not call LLM; consume env[inputName] and apply transforms
+    inputName: string | null; // when set do not call llm
     prompt: string;
-    pendingText: string; // accumulated text not yet flushed into a message
-    userMessages: ChatCompletionMessage[]; // messages to append for this step
+    pendingText: string;
+    userMessages: ChatCompletionMessage[];
   };
 
   let current: CurrentStep | null = null;
+
+  const flushPendingTextToMessage = (s: CurrentStep) => {
+    if (s.pendingText.trim().length > 0) {
+      s.userMessages.push({
+        role: 'user',
+        content: s.pendingText,
+      });
+    }
+
+    s.pendingText = '';
+  };
 
   const flushStep = async (): Promise<Error | null> => {
     if (!current) {
@@ -1573,13 +1647,11 @@ export const execVibeScript = async (
         inputTokens: 0,
         outputTokens: 0,
         thinkingTokens: 0,
-        // totalTokens: 0,
-        // estimated: false,
       },
       costUsd: 0,
     };
 
-    // transform-only step (no LLM call)
+    // transform-only step
 
     if (current.inputName !== null) {
       if (
@@ -1588,7 +1660,7 @@ export const execVibeScript = async (
         current.userMessages.length !== 0
       ) {
         const stepErr = new Error(
-          'step has `from ...` but also has prompt text (LLM should not fire)'
+          'step has `from ...` but also has prompt text (llm should not fire)'
         );
 
         if (_logLevel !== 'off') {
@@ -1672,7 +1744,7 @@ export const execVibeScript = async (
       return null;
     }
 
-    // normal LLM step
+    // normal llm step
 
     const prompt = current.prompt;
 
@@ -1695,9 +1767,7 @@ export const execVibeScript = async (
       ...current.userMessages,
     ];
 
-    ///
-
-    // resolve (provider/thinking/model) *now*, so logs match reality
+    // resolve planning now
 
     const thinkingHint = current.thinking ?? props.thinking ?? null;
 
@@ -1705,12 +1775,10 @@ export const execVibeScript = async (
       models: (() => LLMModel[]) | LLMModel[] | LLMModel;
       thinking: LLMThinking;
       provider: LLMProvider | null;
-      model: LLMModel | null; // concrete model if known
+      model: LLMModel | null;
     };
 
     const planned: PlannedLLMCall | Error = (() => {
-      // 1) step forces model
-
       if (current.model !== null) {
         const resolvedThinking = thinkingHint ?? DEFAULT_THINKING;
 
@@ -1721,8 +1789,6 @@ export const execVibeScript = async (
           model: current.model,
         };
       }
-
-      // 2) step forces provider => pick a model now
 
       if (current.provider !== null) {
         const picked = getModel({
@@ -1737,14 +1803,12 @@ export const execVibeScript = async (
         const [provider, resolvedThinking, model] = picked;
 
         return {
-          models: model, // lock in model so call matches log
+          models: model,
           thinking: resolvedThinking,
           provider,
           model,
         };
       }
-
-      // 3) outer call forces models list/single model
 
       if ('models' in props) {
         const resolvedThinking = thinkingHint ?? DEFAULT_THINKING;
@@ -1766,8 +1830,6 @@ export const execVibeScript = async (
         };
       }
 
-      // 4) no models/provider passed => pick provider + model now
-
       const picked = getModel({
         thinking: thinkingHint ?? undefined,
         provider: props.provider,
@@ -1780,7 +1842,7 @@ export const execVibeScript = async (
       const [provider, resolvedThinking, model] = picked;
 
       return {
-        models: model, // lock in model so call matches log
+        models: model,
         thinking: resolvedThinking,
         provider,
         model,
@@ -1801,14 +1863,6 @@ export const execVibeScript = async (
     }
 
     const inputTokenEstimate = estimateTokensForMessages(nextMessages);
-
-    // const estimatedUsage: LLMTokenUsage = {
-    //   inputTokens: inputTokenEstimate,
-    //   outputTokens: 0,
-    //   thinkingTokens: 0,
-    //   totalTokens: inputTokenEstimate,
-    //   estimated: true,
-    // };
 
     const inputCostUsd =
       planned.model !== null
@@ -1832,9 +1886,7 @@ export const execVibeScript = async (
       );
     }
 
-    ///
-
-    // OUTPUT MODE: don’t call the LLM, but still “advance” with placeholders
+    // output mode
 
     if (_mode === 'output') {
       const zeroAccounting: LLMAccounting = {
@@ -1842,8 +1894,6 @@ export const execVibeScript = async (
           inputTokens: 0,
           outputTokens: 0,
           thinkingTokens: 0,
-          // totalTokens: 0,
-          // estimated: false,
         },
         costUsd: 0,
       };
@@ -1889,8 +1939,6 @@ export const execVibeScript = async (
         env[current.outputName] = placeholder;
       }
 
-      // keep the “conversation shape” moving forward (optional but nice)
-
       messages = [
         ...nextMessages,
         {
@@ -1908,7 +1956,7 @@ export const execVibeScript = async (
       return null;
     }
 
-    // RUN MODE: do the real LLM call
+    // run mode
 
     const completion = await props.completeChat({
       models: planned.models,
@@ -1930,22 +1978,27 @@ export const execVibeScript = async (
 
     totalAccounting = {
       tokens: sumTokenUsage(totalAccounting.tokens, accounting.tokens),
-      // costUnits: totalAccounting.costUnits + accounting.costUnits,
       costUsd: totalAccounting.costUsd + accounting.costUsd,
     };
 
-    // we intentionally bypass parseOutputForTypeId because the
-    // response of the LLM completion maps directly to 'string',
-    // if 'string' is the expected output type, irrespective of
-    // whether it was implicit or not
+    // slop based parsing for non-string expectations
+
+    const baseValue: unknown =
+      current.expectsTypeId === StringTypeId
+        ? raw
+        : await parseSlopOutputForTypeId(
+            script.context,
+            current.expectsTypeId,
+            raw,
+            {
+              urlCheck: 'off',
+            }
+          );
 
     const value: unknown =
       current.expectsTypeId === StringTypeId
         ? raw
-        : applyTransformsRuntime(
-            parseOutputForTypeId(script.context, current.expectsTypeId, raw),
-            current.transforms
-          );
+        : applyTransformsRuntime(baseValue, current.transforms);
 
     const stepResult: VibeScriptStepResult = {
       name: current.name,
@@ -2011,33 +2064,16 @@ export const execVibeScript = async (
     return null;
   };
 
-  const flushPendingTextToMessage = (s: CurrentStep) => {
-    if (s.pendingText.trim().length > 0) {
-      s.userMessages.push({
-        role: 'user',
-        content: s.pendingText,
-      });
-    }
-
-    s.pendingText = '';
-  };
-
-  ///
+  // main execution loop
 
   for (const b of script.blocks) {
-    // ignore regular comments
-
     if (b.kind === 'comment') {
       continue;
     }
 
-    // ignore top-level expects at runtime (it already influenced type checking / expectsTypeId)
-
     if (b.kind === 'preamble') {
       continue;
     }
-
-    // var decl
 
     if (b.kind === 'varDecl') {
       const result = evalExpression(b.expression, env, script.context);
@@ -2050,8 +2086,6 @@ export const execVibeScript = async (
 
       continue;
     }
-
-    // step boundary
 
     if (b.kind === 'step') {
       const flushErr = await flushStep();
@@ -2077,8 +2111,6 @@ export const execVibeScript = async (
 
       continue;
     }
-
-    // file includes
 
     if (b.kind === 'file-include') {
       if (!current) {
@@ -2111,8 +2143,6 @@ export const execVibeScript = async (
       continue;
     }
 
-    // text block belongs to “current step”; if none, it’s the implicit step
-
     if (b.kind === 'text') {
       if (!current) {
         current = {
@@ -2144,7 +2174,6 @@ export const execVibeScript = async (
       continue;
     }
 
-    // image blocks: new message within the current step
     if (b.kind === 'image') {
       if (!current) {
         current = {
@@ -2163,22 +2192,16 @@ export const execVibeScript = async (
         };
       }
 
-      // flush accumulated text as a user message BEFORE the image
-
       flushPendingTextToMessage(current);
-
-      // build the image_url part
 
       const url = (() => {
         if (b.source.kind === 'url') {
           return b.source.url;
         }
 
-        // file
-
         if (!b.resolvedPath || !b.mimeType) {
           return new Error(
-            'internal error: file image missing resolvedPath/mimeType'
+            'internal error file image missing resolvedPath/mimeType'
           );
         }
 
@@ -2194,8 +2217,6 @@ export const execVibeScript = async (
         content: [{ type: 'image_url', image_url: { url } }],
       });
 
-      // keep a readable trace in "prompt" for callbacks/logging
-
       const display = b.source.kind === 'url' ? b.source.url : b.source.path;
 
       current.prompt += `\n\n[image: ${display}]\n\n`;
@@ -2205,8 +2226,6 @@ export const execVibeScript = async (
 
     return new Error('unknown checked block kind at runtime');
   }
-
-  ///
 
   const flush = await flushStep();
 
@@ -2338,19 +2357,13 @@ export const markdownifyStep = (stepResult: VibeScriptStepResult): string => {
       return '';
     }
 
-    // string: output as-is (markdown)
-
     if (typeof value === 'string') {
       return value;
     }
 
-    // array of strings: markdown list
-
     if (isStringArray(value)) {
       return asMarkdownList(value);
     }
-
-    // object: recursively render
 
     if (typeof value === 'object' && !Array.isArray(value)) {
       const obj = value as Record<string, unknown>;
@@ -2358,10 +2371,7 @@ export const markdownifyStep = (stepResult: VibeScriptStepResult): string => {
       const lines: string[] = [];
 
       for (const k of Object.keys(obj)) {
-        // biome-ignore lint/suspicious/noExplicitAny: runtime indexing
-        const v = (obj as any)[k];
-
-        // string field => heading: "# key: value"
+        const v = obj[k];
 
         if (typeof v === 'string') {
           lines.push(heading(level, `${k}: ${v}`));
@@ -2370,8 +2380,6 @@ export const markdownifyStep = (stepResult: VibeScriptStepResult): string => {
 
           continue;
         }
-
-        // array of strings field => heading + list
 
         if (isStringArray(v)) {
           lines.push(heading(level, k));
@@ -2389,8 +2397,6 @@ export const markdownifyStep = (stepResult: VibeScriptStepResult): string => {
           continue;
         }
 
-        // nested object field => heading + recurse
-
         if (v && typeof v === 'object' && !Array.isArray(v)) {
           lines.push(heading(level, k));
 
@@ -2407,8 +2413,6 @@ export const markdownifyStep = (stepResult: VibeScriptStepResult): string => {
           continue;
         }
 
-        // fallback: still give the key a heading, then dump something readable
-
         lines.push(heading(level, k));
 
         lines.push('');
@@ -2424,8 +2428,6 @@ export const markdownifyStep = (stepResult: VibeScriptStepResult): string => {
 
       return lines.join('\n').trimEnd();
     }
-
-    // everything else
 
     return fallbackMarkdown(value);
   };
