@@ -240,9 +240,15 @@ const skipWhitespaceOrNewlines = (
   return i;
 };
 
-export type SlopTextLiteralPart = {
+export type SlopTextLiteralQuasis = {
   quasis: string;
 };
+
+export type SlopTextLiteralUrl = {
+  url: string;
+};
+
+export type SlopTextLiteralPart = SlopTextLiteralQuasis | SlopTextLiteralUrl;
 
 export type SlopHeadingBlock = {
   number: number; // number of preceding `#`
