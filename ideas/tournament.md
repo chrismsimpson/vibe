@@ -1,4 +1,4 @@
-A wild thing you can do with this tool: **run a multi-model “tournament” (or courtroom debate) where different models produce competing artifacts, a separate judge step scores them in typed JSON, and then you use `maxBy(score)` + `from ...` to select the winner *without* another LLM call—then feed only the winner into a final polishing step.**
+Idea: **run a multi-model “tournament” (or courtroom debate) where different models produce competing artifacts, a separate judge step scores them in typed JSON, and then you use `maxBy(score)` + `from ...` to select the winner *without* another LLM call—then feed only the winner into a final polishing step.**
 
 This leans on a combo you don’t usually get in simple prompt runners:
 
@@ -62,9 +62,6 @@ B:
 ${b.draft}
 
 Produce the final announcement as markdown.
+
 No preamble.
 ```
-
-**Why this is “wild” in practice:** you’ve built a small, typed, multi-agent selection pipeline where *the selection logic is deterministic and local* (`maxBy`), while generation and judging can be split across different models (or providers) for diversity and robustness.
-
-If you want to push it further, you can make a full bracket (A/B/C/D), have the judge return an array of scores, do `maxBy(score)`, then have a second judge do a “bias check” step, etc.—all still structured and composable.
