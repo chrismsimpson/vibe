@@ -8,4 +8,4 @@
   amet
 ]) -->
 
-hello ${foo()}
+hello ${foo()} and ${foo()}

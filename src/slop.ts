@@ -273,118 +273,6 @@ export type SlopBlock =
   | SlopCodeBlock
   | SlopListBlock;
 
-const stripTrailingUrlPunc = (url: string): string => {
-  let out = url;
-
-  while (out.length > 0) {
-    const last = out[out.length - 1];
-
-    if (
-      last === '.' ||
-      last === ',' ||
-      last === ';' ||
-      last === ':' ||
-      last === '!' ||
-      last === '?' ||
-      last === ')' ||
-      last === ']' ||
-      last === '}' ||
-      last === '"' ||
-      last === "'"
-    ) {
-      out = out.slice(0, -1);
-      continue;
-    }
-
-    break;
-  }
-
-  return out;
-};
-
-const splitTextIntoParts = (text: string): SlopTextLiteralPart[] => {
-  const parts: SlopTextLiteralPart[] = [];
-
-  // permissive and cheap
-
-  const re = /https?:\/\/[^\s<>()]+/g;
-
-  let last = 0;
-
-  let m: RegExpExecArray | null;
-
-  do {
-    m = re.exec(text);
-
-    if (!m) {
-      break;
-    }
-
-    const raw = m[0] ?? '';
-
-    const start = m.index;
-
-    const end = start + raw.length;
-
-    if (start > last) {
-      parts.push({
-        quasis: text.slice(last, start),
-      });
-    }
-
-    const cleaned = stripTrailingUrlPunc(raw);
-
-    if (cleaned.length > 0) {
-      parts.push({
-        url: cleaned,
-      });
-
-      // keep any stripped punctuation as quasis
-      const strippedLen = raw.length - cleaned.length;
-
-      if (strippedLen > 0) {
-        parts.push({
-          quasis: raw.slice(raw.length - strippedLen),
-        });
-      }
-    } else {
-      parts.push({
-        quasis: raw,
-      });
-    }
-
-    last = end;
-  } while (m);
-
-  if (last < text.length) {
-    parts.push({
-      quasis: text.slice(last),
-    });
-  }
-
-  // compress adjacent quasis
-
-  const merged: SlopTextLiteralPart[] = [];
-
-  for (const p of parts) {
-    if ('quasis' in p) {
-      const prev = merged[merged.length - 1];
-
-      if (prev && 'quasis' in prev) {
-        merged[merged.length - 1] = {
-          quasis: prev.quasis + p.quasis,
-        };
-
-        continue;
-      }
-    }
-
-    merged.push(p);
-  }
-
-  return merged;
-};
-
 type SlopTextPartsMode = 'line' | 'paragraph';
 
 const parseTextParts = (
@@ -405,6 +293,117 @@ const parseTextParts = (
     }
 
     return i;
+  };
+
+  const splitTextIntoParts = (text: string): SlopTextLiteralPart[] => {
+    const parts: SlopTextLiteralPart[] = [];
+
+    // permissive and cheap
+
+    const re = /https?:\/\/[^\s<>()]+/g;
+
+    let last = 0;
+
+    let m: RegExpExecArray | null;
+
+    do {
+      m = re.exec(text);
+
+      if (!m) {
+        break;
+      }
+
+      const raw = m[0] ?? '';
+
+      const start = m.index;
+
+      const end = start + raw.length;
+
+      if (start > last) {
+        parts.push({
+          quasis: text.slice(last, start),
+        });
+      }
+
+      ///
+
+      let cleaned = raw;
+
+      while (cleaned.length > 0) {
+        const last = cleaned[cleaned.length - 1];
+
+        if (
+          last === '.' ||
+          last === ',' ||
+          last === ';' ||
+          last === ':' ||
+          last === '!' ||
+          last === '?' ||
+          last === ')' ||
+          last === ']' ||
+          last === '}' ||
+          last === '"' ||
+          last === "'"
+        ) {
+          cleaned = cleaned.slice(0, -1);
+
+          continue;
+        }
+
+        break;
+      }
+
+      ///
+
+      if (cleaned.length > 0) {
+        parts.push({
+          url: cleaned,
+        });
+
+        // keep any stripped punctuation as quasis
+        const strippedLen = raw.length - cleaned.length;
+
+        if (strippedLen > 0) {
+          parts.push({
+            quasis: raw.slice(raw.length - strippedLen),
+          });
+        }
+      } else {
+        parts.push({
+          quasis: raw,
+        });
+      }
+
+      last = end;
+    } while (m);
+
+    if (last < text.length) {
+      parts.push({
+        quasis: text.slice(last),
+      });
+    }
+
+    // compress adjacent quasis
+
+    const merged: SlopTextLiteralPart[] = [];
+
+    for (const p of parts) {
+      if ('quasis' in p) {
+        const prev = merged[merged.length - 1];
+
+        if (prev && 'quasis' in prev) {
+          merged[merged.length - 1] = {
+            quasis: prev.quasis + p.quasis,
+          };
+
+          continue;
+        }
+      }
+
+      merged.push(p);
+    }
+
+    return merged;
   };
 
   if (mode === 'line') {
