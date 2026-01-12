@@ -1,6 +1,3 @@
-# TODO
-
-
 TODO?:
 - oustanding operators (`==`, `!=`, `<`, `<=`, `>`, `>=`)
 - assignment expressions in more places (you already have `WithAssignments` but calls use `WithoutAssignments`)
