@@ -39,6 +39,8 @@ export type LLMAccounting = {
 const tokenSplitRegex = /\s+/;
 
 export const estimateTokensForText = (text: string): number => {
+  // TODO: rewrite this to factor in /\s+/ delimiting punctuation, etc.
+
   const words = text.split(tokenSplitRegex).filter(w => w.length > 0);
 
   let tokenEstimate = 0;

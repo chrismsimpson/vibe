@@ -14,10 +14,9 @@ This leans on a combo you don’t usually get in simple prompt runners:
 <!-- let seed = floor(random() * 1000000) -->
 <!-- let candidates = 2 -->
 
-<!--
-~ ~/your-project
-  docs/style-guide.md
-  docs/product-brief.md
+<!-- ~/some-repo
+docs/style-guide.md
+docs/product-brief.md
 -->
 
 <!-- step: draftA; model: gemini-2.5-pro; expect: { "id": string, "draft": string } ; named a -->
