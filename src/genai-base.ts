@@ -46,7 +46,7 @@ export const estimateTokensForText = (text: string): number => {
   let tokenEstimate = 0;
 
   const incTokensEstimate = (w: string) => {
-    tokenEstimate += Math.ceil(w.length / 3);
+    tokenEstimate += Math.ceil(w.length / 2.9); // was 3, change to 2.9 as a dumb way to factor in punctuation
   };
 
   words.forEach(incTokensEstimate);
