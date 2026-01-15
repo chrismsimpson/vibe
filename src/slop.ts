@@ -273,15 +273,13 @@ export type SlopBlock =
   | SlopCodeBlock
   | SlopListBlock;
 
-type SlopTextPartsMode = 'line' | 'paragraph';
-
 const parseTextParts = (
   parser: Parser<SlopToken>,
   options?: {
-    mode?: SlopTextPartsMode;
+    mode?: 'line' | 'paragraph';
   }
 ): SlopTextLiteralPart[] | Error => {
-  const mode: SlopTextPartsMode = options?.mode ?? 'line';
+  const mode = options?.mode ?? 'line';
 
   const tokens = parser.tokens;
 
@@ -728,93 +726,6 @@ const parseCodeBlock = (parser: Parser<SlopToken>): SlopCodeBlock | Error => {
   return new Error('unterminated slop code block missing closing ```');
 };
 
-const scanListRunLength = (tokens: SlopToken[], start: number): number => {
-  let i = start;
-
-  let count = 0;
-
-  let style:
-    | { kind: 'ordered' }
-    | { kind: 'unordered'; bullet: string }
-    | null = null;
-
-  while (i < tokens.length) {
-    // stop at blank line
-
-    let ptr = i;
-
-    while (ptr < tokens.length && tokens[ptr]?.kind === 'whitespace') {
-      ptr += 1;
-    }
-
-    const t0 = tokens[ptr];
-
-    if (!t0) {
-      break;
-    }
-
-    if (t0.kind === 'newline' || t0.kind === 'eof') {
-      break;
-    }
-
-    // stop before other block starts
-
-    if (t0.kind === 'punc' && (t0.value === '#' || t0.value === '```')) {
-      break;
-    }
-
-    const peek = matchListLineAt(tokens, i);
-
-    if (!peek) {
-      break;
-    }
-
-    if (style === null) {
-      style = peek.isOrdered
-        ? { kind: 'ordered' }
-        : { kind: 'unordered', bullet: peek.bullet };
-    } else {
-      if (style.kind === 'ordered') {
-        if (!peek.isOrdered) {
-          break;
-        }
-      } else {
-        if (peek.isOrdered || peek.bullet !== style.bullet) {
-          break;
-        }
-      }
-    }
-
-    // advance to next line without consuming parser state
-
-    let j = i;
-
-    while (j < tokens.length) {
-      const t = tokens[j];
-
-      if (!t) {
-        break;
-      }
-
-      j += 1;
-
-      if (t.kind === 'newline') {
-        break;
-      }
-
-      if (t.kind === 'eof') {
-        break;
-      }
-    }
-
-    i = j;
-
-    count += 1;
-  }
-
-  return count;
-};
-
 const parseListBlock = (parser: Parser<SlopToken>): SlopListBlock | Error => {
   const items: SlopListItem[] = [];
 
@@ -943,11 +854,100 @@ const parseTextLikeBlock = (
 
   parser.position = skipWhitespaceOrNewlines(parser.tokens, parser.position);
 
-  const runLen = scanListRunLength(parser.tokens, parser.position);
+  ///
+
+  ///
+
+  // const runLen = scanListRunLength(parser.tokens, parser.position);
+
+  let i = parser.position;
+
+  let count = 0;
+
+  let style:
+    | { kind: 'ordered' }
+    | { kind: 'unordered'; bullet: string }
+    | null = null;
+
+  while (i < parser.tokens.length) {
+    // stop at blank line
+
+    let ptr = i;
+
+    while (
+      ptr < parser.tokens.length &&
+      parser.tokens[ptr]?.kind === 'whitespace'
+    ) {
+      ptr += 1;
+    }
+
+    const t0 = parser.tokens[ptr];
+    if (!t0) {
+      break;
+    }
+
+    if (t0.kind === 'newline' || t0.kind === 'eof') {
+      break;
+    }
+
+    // stop before other block starts
+
+    if (t0.kind === 'punc' && (t0.value === '#' || t0.value === '```')) {
+      break;
+    }
+
+    const peek = matchListLineAt(parser.tokens, i);
+
+    if (!peek) {
+      break;
+    }
+
+    if (style === null) {
+      style = peek.isOrdered
+        ? { kind: 'ordered' }
+        : { kind: 'unordered', bullet: peek.bullet };
+    } else {
+      if (style.kind === 'ordered') {
+        if (!peek.isOrdered) {
+          break;
+        }
+      } else {
+        if (peek.isOrdered || peek.bullet !== style.bullet) {
+          break;
+        }
+      }
+    }
+
+    // advance to next line without consuming parser state
+
+    let j = i;
+
+    while (j < parser.tokens.length) {
+      const t = parser.tokens[j];
+
+      if (!t) {
+        break;
+      }
+
+      j += 1;
+
+      if (t.kind === 'newline') {
+        break;
+      }
+
+      if (t.kind === 'eof') {
+        break;
+      }
+    }
+
+    i = j;
+
+    count += 1;
+  }
 
   // require at least 2 lines to avoid treating hyphenated prose as a list
 
-  if (runLen >= 2) {
+  if (count >= 2) {
     return parseListBlock(parser);
   }
 
