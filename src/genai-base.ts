@@ -147,3 +147,6 @@ export const usdForTokens = (tokens: number, usdPerMTokens: number): number => {
   // pricing is per 1,000,000 tokens
   return (tokens / 1_000_000) * usdPerMTokens;
 };
+
+export const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null;

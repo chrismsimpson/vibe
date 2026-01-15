@@ -6,6 +6,7 @@ import {
   estimateTokensForMessages,
   estimateTokensForText,
   type LLMPricing,
+  isRecord,
 } from './genai-base';
 
 // models
@@ -114,15 +115,14 @@ export interface GeminiChatCompletionResponse {
 }
 
 export const isGeminiChatCompletionResponse = (
-  // biome-ignore lint/suspicious/noExplicitAny: ¯\_(ツ)_/¯
-  response: any
+  response: unknown
 ): response is GeminiChatCompletionResponse => {
-  return (
-    response &&
-    Array.isArray(response.candidates) &&
-    // biome-ignore lint/suspicious/noExplicitAny: ¯\_(ツ)_/¯
-    response.candidates.every((candidate: any) => typeof candidate === 'object')
-  );
+  if (!isRecord(response)) return false;
+
+  const candidates = response.candidates;
+  if (!Array.isArray(candidates)) return false;
+
+  return candidates.every(isRecord);
 };
 
 // completion

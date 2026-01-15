@@ -6,6 +6,7 @@ import {
   estimateTokensForMessages,
   estimateTokensForText,
   type LLMPricing,
+  isRecord,
 } from './genai-base';
 import { z } from 'zod';
 
@@ -106,15 +107,14 @@ export interface OpenAIChatCompletionResponse {
 }
 
 export const isOpenAIChatCompletionResponse = (
-  // biome-ignore lint/suspicious/noExplicitAny: ¯\_(ツ)_/¯
-  response: any
+  response: unknown
 ): response is OpenAIChatCompletionResponse => {
-  return (
-    response &&
-    Array.isArray(response.choices) &&
-    // biome-ignore lint/suspicious/noExplicitAny: ¯\_(ツ)_/¯
-    response.choices.every((choice: any) => typeof choice === 'object')
-  );
+  if (!isRecord(response)) return false;
+
+  const choices = response.choices;
+  if (!Array.isArray(choices)) return false;
+
+  return choices.every(isRecord);
 };
 
 // completion
