@@ -2939,7 +2939,7 @@ const consumePath = (parser: Parser<VibeScriptToken>): string | Error => {
 
     // stop at token boundaries that separate paths
 
-    if (t.kind === 'whitespace' || t.kind === 'newline') {
+    if (t.kind === 'newline') {
       break;
     }
 

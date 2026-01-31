@@ -12,7 +12,7 @@ import { Agent, setGlobalDispatcher } from 'undici';
 setGlobalDispatcher(
   new Agent({
     // handshake/DNS/TLS
-    connect: { timeout: 120_000 }, // 120s
+    connect: { timeout: 300_000 }, // 5 min
     // wait for first byte of headers
     headersTimeout: 600_000, // 10 min
     // time between body chunks
