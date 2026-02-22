@@ -16,6 +16,7 @@ const geminiLLMModels = [
   'gemini-2.5-pro',
   'gemini-3-flash-preview',
   'gemini-3-pro-preview',
+  'gemini-3.1-pro-preview',
 ] as const;
 
 export type GeminiLLMModel = (typeof geminiLLMModels)[number];
@@ -51,6 +52,14 @@ export const geminiPricing: Record<GeminiLLMModel, LLMPricing> = {
 
   // 2026-01-04: input: $2.00, prompts <= 200k tokens, $4.00, prompts > 200k tokens; output: $12.00, prompts <= 200k tokens, $18.00, prompts > 200k
   'gemini-3-pro-preview': {
+    kind: 'tiered',
+    thresholdPromptTokens: 200_000,
+    belowOrEqual: { inputUsdPerMTokens: 2.0, outputUsdPerMTokens: 12.0 },
+    above: { inputUsdPerMTokens: 4.0, outputUsdPerMTokens: 18.0 },
+  },
+
+  // 2026-02-21: TODO: copied from above
+  'gemini-3.1-pro-preview': {
     kind: 'tiered',
     thresholdPromptTokens: 200_000,
     belowOrEqual: { inputUsdPerMTokens: 2.0, outputUsdPerMTokens: 12.0 },
@@ -340,7 +349,9 @@ export const toGeminiChatCompletionRequestMessages = (
 // heuristics
 
 const isProLikeModel = (model: GeminiLLMModel): boolean =>
-  model === 'gemini-2.5-pro' || model === 'gemini-3-pro-preview';
+  model === 'gemini-2.5-pro' ||
+  model === 'gemini-3-pro-preview' ||
+  model === 'gemini-3.1-pro-preview';
 
 const maxThinkingBudget = (model: GeminiLLMModel): number =>
   isProLikeModel(model) ? 32768 : 24576;
@@ -395,7 +406,8 @@ export const getGeminiModel = (thinking: LLMThinking): GeminiLLMModel => {
 
   if (typeof thinking === 'number') {
     if (thinking > 4096) {
-      return 'gemini-3-pro-preview';
+      // return 'gemini-3-pro-preview';
+      return 'gemini-3.1-pro-preview';
     }
 
     return 'gemini-3-flash-preview';
@@ -410,11 +422,13 @@ export const getGeminiModel = (thinking: LLMThinking): GeminiLLMModel => {
 
     case 'auto':
     case 'low':
-    case 'medium':
       return 'gemini-3-flash-preview';
 
+    case 'medium':
+    // only supported gemini-3.1
     case 'high':
     case 'max':
-      return 'gemini-3-pro-preview';
+      // return 'gemini-3-pro-preview';
+      return 'gemini-3.1-pro-preview';
   }
 };
