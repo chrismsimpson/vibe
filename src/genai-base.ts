@@ -36,20 +36,49 @@ export type LLMAccounting = {
   costUsd: number;
 };
 
-const tokenSplitRegex = /\s+/;
+// const tokenSplitRegex = /\s+/;
+
+// export const estimateTokensForText = (text: string): number => {
+//   // TODO: rewrite this to factor in /\s+/ delimiting punctuation, etc.
+
+//   const words = text.split(tokenSplitRegex).filter(w => w.length > 0);
+
+//   let tokenEstimate = 0;
+
+//   const incTokensEstimate = (w: string) => {
+//     tokenEstimate += Math.ceil(w.length / 2.9); // was 3, change to 2.9 as a dumb way to factor in punctuation
+//   };
+
+//   words.forEach(incTokensEstimate);
+
+//   return tokenEstimate;
+// };
+
+const tokenSplitRegex = /[\p{L}\p{N}]+|[^\p{L}\p{N}\s]+/gu;
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional to match all ASCII
+const nonAsciiRegex = /[^\x00-\x7F]/;
 
 export const estimateTokensForText = (text: string): number => {
-  // TODO: rewrite this to factor in /\s+/ delimiting punctuation, etc.
+  if (!text) {
+    return 0;
+  }
 
-  const words = text.split(tokenSplitRegex).filter(w => w.length > 0);
+  const chunks = text.match(tokenSplitRegex);
+
+  if (!chunks) {
+    return 0;
+  }
 
   let tokenEstimate = 0;
 
-  const incTokensEstimate = (w: string) => {
-    tokenEstimate += Math.ceil(w.length / 2.9); // was 3, change to 2.9 as a dumb way to factor in punctuation
-  };
-
-  words.forEach(incTokensEstimate);
+  for (const chunk of chunks) {
+    if (nonAsciiRegex.test(chunk)) {
+      tokenEstimate += Math.ceil(chunk.length * 1.5);
+    } else {
+      tokenEstimate += Math.ceil(chunk.length / 4.5);
+    }
+  }
 
   return tokenEstimate;
 };
