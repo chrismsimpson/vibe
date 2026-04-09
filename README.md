@@ -1,13 +1,13 @@
 # Vibe 🌊
 
-**Vibe** is a simple scripting language that turns regular Markdown files into powerful, multi-step AI workflows (a Markdown superset, if you will).
+**Vibe** is a simple scripting language that turns regular Markdown files into powerful, multi-step AI workflows.
 
 If you've ever felt frustrated trying to get ChatGPT to output *exactly* a JSON list, or wanted to string multiple AI tasks together without writing complex Python scripts, Vibe is for you.
 
 ---
 
 ### What is it?
-It's a command-line tool that reads standard Markdown files (`.md`) equipped with special HTML comments (`<!-- ... -->`). Vibe uses these comments to inject logic, chain prompts together, swap out AI models (OpenAI or Gemini), and force the AI to return exactly the data format you ask for.
+It's a Turing-complete superset of Markdown (provided here via a command-line tool, but the code could be shipped in anything - a React app for example). The sytax is standard Markdown files (`.md`) with additional runtime abilities tucked neatly inside the existing comment syntax of Markdown (so `<!-- ... -->`). Vibe uses these comments to inject logic, chain prompts together, swap out AI models (OpenAI or Gemini), and force the AI to return exactly the data format you ask for.
 
 ### Why might you want to use it?
 * **Guaranteed Formats:** Tell Vibe `<!-- expect: { "name": string }[] -->` and it will automatically parse the AI's "slop" (rambling text) and extract exactly the structured data you need. 
