@@ -1365,16 +1365,15 @@ const renderFileIncludeBlock = (
   let out = '';
 
   for (const file of block.files) {
-    const resolvedFilePath = path.join(block.resolvedParent, file);
+    // const resolvedFilePath = path.join(block.resolvedParent, file);
 
     let contents: string;
 
     try {
-      contents = fsSync.readFileSync(resolvedFilePath, 'utf8');
+      // contents = fsSync.readFileSync(resolvedFilePath, 'utf8');
+      contents = fsSync.readFileSync(file, 'utf8'); // file is always absolute
     } catch {
-      return new Error(
-        `failed to read vibe script include file: ${resolvedFilePath}`
-      );
+      return new Error(`failed to read vibe script include file: ${file}`);
     }
 
     const ext = path.extname(file);

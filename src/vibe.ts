@@ -2978,11 +2978,12 @@ const parseFileIncludeStatement = (
     );
   }
 
-  /// hardcoded to '~' for now (might want to handle other cases like '/' or './' later)
-
-  if (firstToken.kind !== 'punc' || firstToken.value !== '~') {
+  if (
+    firstToken.kind !== 'punc' ||
+    (firstToken.value !== '~' && firstToken.value !== '/')
+  ) {
     return new Error(
-      `expected '~' token starting vibe script file include statement, got '${firstToken.value}'`
+      `expected '~' or '/' token starting vibe script file include statement, got '${firstToken.value}'`
     );
   }
 
@@ -3085,7 +3086,10 @@ const parseStatement = (
 
   // file include statement
 
-  if (nextToken.kind === 'punc' && nextToken.value === '~') {
+  if (
+    nextToken.kind === 'punc' &&
+    (nextToken.value === '~' || nextToken.value === '/')
+  ) {
     return parseFileIncludeStatement(parser);
   }
 
@@ -3096,7 +3100,7 @@ const parseStatement = (
 
 const preceedsStatement = (first: VibeScriptToken): boolean => {
   return (
-    (first.kind === 'punc' && first.value === '~') ||
+    (first.kind === 'punc' && (first.value === '~' || first.value === '/')) ||
     (first.kind === 'text' && isPreambleStartKeyword(first.value)) ||
     (first.kind === 'text' && first.value === 'let') ||
     (first.kind === 'text' && first.value === 'step')
@@ -3286,9 +3290,9 @@ const classifyImageComment = (
     return { kind: 'url', url: u.toString() };
   }
 
-  // single-path ~/... form (only treat as image if *exactly one* token/path)
+  // single-path ~/... or /... form (only treat as image if *exactly one* token/path)
 
-  if (s.startsWith('~/')) {
+  if (s.startsWith('~/') || s.startsWith('/')) {
     // must be a single "path token" (otherwise it’s a file-include statement)
 
     if (/\s/.test(s)) {
@@ -5333,9 +5337,7 @@ const typeCheckStatement = (
 
     ///
 
-    const files = stmt.files;
-
-    if (files.length === 0) {
+    if (stmt.files.length === 0) {
       return new Error(
         'vibe script file include must include at least one file path'
       );
@@ -5343,14 +5345,74 @@ const typeCheckStatement = (
 
     ///
 
-    for (const filePath of files) {
-      const resolvedFilePath = path.join(resolvedParent, filePath);
+    const resolvedFiles: string[] = [];
 
-      if (!fsSync.existsSync(resolvedFilePath)) {
+    for (const filePath of stmt.files) {
+      // we resolve the full path first to make parsing directory/filename easier
+      // across different OS delimiters
+      const fullPath = path.join(resolvedParent, filePath);
+      const dirName = path.dirname(fullPath);
+      const fileName = path.basename(fullPath);
+
+      // handle globs (e.g. *.tsx, *.d.ts, *)
+      // we check if the filename part starts with '*' specifically
+      if (fileName.startsWith('*')) {
+        // the suffix is everything after the *, e.g. ".tsx" or ".d.ts"
+        // if fileName is just '*', suffix is empty string
+        const suffix = fileName.slice(1);
+
+        if (!fsSync.existsSync(dirName)) {
+          return new Error(
+            `Directory for glob pattern does not exist: ${dirName}`
+          );
+        }
+
+        let entries: fsSync.Dirent[];
+
+        try {
+          entries = fsSync.readdirSync(dirName, { withFileTypes: true });
+        } catch (err) {
+          return err instanceof Error ? err : new Error(String(err));
+        }
+
+        for (const entry of entries) {
+          if (!entry.isFile()) {
+            continue;
+          }
+
+          // filter by suffix.
+          // if suffix is empty (user provided just '*'), this accepts everything
+          // if suffix is '.d.ts', this correctly handles double extensions
+          if (entry.name.endsWith(suffix)) {
+            const resolvedEntryPath = path.join(dirName, entry.name);
+
+            if (!resolvedFiles.includes(resolvedEntryPath)) {
+              resolvedFiles.push(resolvedEntryPath);
+            }
+          }
+        }
+
+        continue;
+      }
+      if (fileName.includes('*')) {
+        return new Error('not implemented yet');
+
+        // continue;
+      }
+
+      // handle standard files (exact match)
+
+      if (resolvedFiles.includes(fullPath)) {
+        continue;
+      }
+
+      if (!fsSync.existsSync(fullPath)) {
         return new Error(
-          `vibe script file include file does not exist: ${resolvedFilePath}`
+          `vibe script file include file does not exist: ${fullPath}`
         );
       }
+
+      resolvedFiles.push(fullPath);
     }
 
     ///
@@ -5359,7 +5421,7 @@ const typeCheckStatement = (
       kind: 'file-include',
       parent: stmt.parent,
       resolvedParent,
-      files: stmt.files,
+      files: resolvedFiles,
     };
   }
 

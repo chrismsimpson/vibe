@@ -23,7 +23,11 @@ const defaultReasoningEffort = 'high';
 
 // models
 
-const openAILLMModels = ['gpt-4o-mini-2024-07-18', 'gpt-5.2'] as const;
+const openAILLMModels = [
+  'gpt-4o-mini-2024-07-18',
+  'gpt-5.2',
+  'gpt-5.4',
+] as const;
 
 export type OpenAILLMModel = (typeof openAILLMModels)[number];
 
@@ -40,6 +44,13 @@ export const openAIPricing: Record<OpenAILLMModel, LLMPricing> = {
     kind: 'flat',
     inputUsdPerMTokens: 1.75,
     outputUsdPerMTokens: 14.0,
+  },
+
+  // 2026-03-06: input: $2.50; output: $15.00
+  'gpt-5.4': {
+    kind: 'flat',
+    inputUsdPerMTokens: 2.5,
+    outputUsdPerMTokens: 15.0,
   },
 };
 
@@ -335,5 +346,6 @@ export const getOpenAIModel = (thinking: LLMThinking): OpenAILLMModel => {
     return 'gpt-4o-mini-2024-07-18';
   }
 
-  return 'gpt-5.2';
+  // return 'gpt-5.2';
+  return 'gpt-5.4';
 };
