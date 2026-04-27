@@ -3263,6 +3263,13 @@ const scanCommentInner = (
   return new Error('unterminated comment (missing "-->")');
 };
 
+const countNonEmptyLines = (text: string): number => {
+  return text
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0).length;
+};
+
 const classifyImageComment = (
   rawInner: string
 ): VibeScriptImageSource | null | Error => {
@@ -3290,12 +3297,12 @@ const classifyImageComment = (
     return { kind: 'url', url: u.toString() };
   }
 
-  // single-path ~/... or /... form (only treat as image if *exactly one* token/path)
+  // single-path ~/... or /... form (only treat as image if the comment
+  // contains exactly one non-empty line; multi-line comments remain
+  // file-include statements)
 
   if (s.startsWith('~/') || s.startsWith('/')) {
-    // must be a single "path token" (otherwise it’s a file-include statement)
-
-    if (/\s/.test(s)) {
+    if (countNonEmptyLines(rawInner) !== 1) {
       return null;
     }
 
