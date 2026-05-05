@@ -25,6 +25,7 @@ import {
   VibeScriptBinaryOperator,
   typeNameForTypeId,
   type CheckedVibeScriptBlock,
+  type CheckedVibeScriptFileIncludeBlock,
   parseVibeScript,
   typeCheckVibeScript,
   StringTypeId,
@@ -1355,6 +1356,27 @@ const evalExpression = (
   return new Error('unknown expression kind at runtime');
 };
 
+const normalizePromptPathLabel = (value: string): string => {
+  return value.replace(/\\/g, '/');
+};
+
+const getIncludedFilePromptLabel = (
+  block: CheckedVibeScriptFileIncludeBlock,
+  resolvedFilePath: string
+): string => {
+  const parentRaw = normalizePromptPathLabel(block.parent);
+
+  const relativePath = normalizePromptPathLabel(
+    path.relative(block.resolvedParent, resolvedFilePath)
+  );
+
+  if (relativePath.length === 0 || relativePath === '.') {
+    return parentRaw;
+  }
+
+  return path.posix.join(parentRaw, relativePath);
+};
+
 const renderFileIncludeBlock = (
   block: CheckedVibeScriptBlock
 ): string | Error => {
@@ -1365,13 +1387,13 @@ const renderFileIncludeBlock = (
   let out = '';
 
   for (const file of block.files) {
-    // const resolvedFilePath = path.join(block.resolvedParent, file);
+    // file is always absolute here; use it for reading,
+    // but derive a nicer display label from the original include path
 
     let contents: string;
 
     try {
-      // contents = fsSync.readFileSync(resolvedFilePath, 'utf8');
-      contents = fsSync.readFileSync(file, 'utf8'); // file is always absolute
+      contents = fsSync.readFileSync(file, 'utf8');
     } catch {
       return new Error(`failed to read vibe script include file: ${file}`);
     }
@@ -1381,10 +1403,7 @@ const renderFileIncludeBlock = (
 
     const lang = ext.length > 0 ? ext.slice(1) : base;
 
-    const displayPath =
-      file.startsWith('/') || file.startsWith('~') || file.startsWith('./')
-        ? file
-        : `./${file}`;
+    const displayPath = getIncludedFilePromptLabel(block, file);
 
     out += `\n\`${displayPath}\`:\n\n`;
     out += `\`\`\`${lang}\n`;
