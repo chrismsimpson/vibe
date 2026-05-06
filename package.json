@@ -10,6 +10,7 @@
     "output": "ts-node src/output.ts",
     "archive": "ts-node src/archive.ts",
     "tests": "ts-node src/tests.ts",
+    "count": "ts-node src/count.ts",
     "build": "tsc"
   },
   "dependencies": {
