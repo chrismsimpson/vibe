@@ -2,11 +2,13 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 
-import type { LLMCompleteChat, LLMModel } from './genai';
+import { computeCostUsd, type LLMCompleteChat, type LLMModel } from './genai';
 import { estimateTokensForText } from './genai-base';
 import { resolvePrompt } from './resolve-prompt';
 import { parseVibeScript, typeCheckVibeScript } from './vibe';
 import { execVibeScript } from './vibe-machine';
+
+const COUNT_ESTIMATE_MODEL: LLMModel = 'gpt-5.4';
 
 async function main(arg?: string) {
   const prompt = resolvePrompt(arg);
@@ -119,11 +121,16 @@ async function main(arg?: string) {
   if (result.steps.length === 0) {
     console.log('No steps rendered');
     console.log('\nTotal estimated tokens: 0');
+    console.log(
+      `Total estimated input cost (${COUNT_ESTIMATE_MODEL}): $0.000000`
+    );
 
     return;
   }
 
   let totalEstimatedTokens = 0;
+
+  let totalEstimatedInputCostUsd = 0;
 
   for (let i = 0; i < result.steps.length; i++) {
     const step = result.steps[i];
@@ -136,6 +143,17 @@ async function main(arg?: string) {
 
     totalEstimatedTokens += estimatedTokens;
 
+    const estimatedCost = computeCostUsd({
+      model: COUNT_ESTIMATE_MODEL,
+      usage: {
+        inputTokens: estimatedTokens,
+        outputTokens: 0,
+        thinkingTokens: 0,
+      },
+    });
+
+    totalEstimatedInputCostUsd += estimatedCost.totalUsd;
+
     const stepLabel =
       result.steps.length > 1
         ? `Step ${i + 1}${step.name ? ` (${step.name})` : ''}`
@@ -144,9 +162,15 @@ async function main(arg?: string) {
     console.log(`\n${stepLabel}:`);
     // console.log(step.prompt);
     console.log(`Estimated tokens: ${estimatedTokens}`);
+    console.log(
+      `Estimated input cost (${COUNT_ESTIMATE_MODEL}): $${estimatedCost.totalUsd.toFixed(6)}`
+    );
   }
 
   console.log(`\nTotal estimated tokens: ${totalEstimatedTokens}`);
+  console.log(
+    `Total estimated input cost (${COUNT_ESTIMATE_MODEL}): $${totalEstimatedInputCostUsd.toFixed(6)}`
+  );
 }
 
 main(process.argv[2]).catch(err => {
